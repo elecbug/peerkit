@@ -11,17 +11,14 @@ import (
 var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
 func (s *Scenario) Validate() error {
+	if err := protocols.Validate(s.Protocol); err != nil {
+		return err
+	}
 	if s.Version != 1 {
 		return fmt.Errorf("unsupported scenario version %d", s.Version)
 	}
-	switch s.Protocol {
-	case protocols.BaseFlooding, protocols.DuplicateAwareFlooding:
-	default:
-		return fmt.Errorf("unsupported protocol %q; supported protocols are %q and %q",
-			s.Protocol, protocols.BaseFlooding, protocols.DuplicateAwareFlooding)
-	}
 	if s.Topology.Directed {
-		return fmt.Errorf("directed topology is not supported")
+		return fmt.Errorf("directed topology is not supported in peerkit v0.1")
 	}
 	if len(s.Topology.Nodes) == 0 {
 		return fmt.Errorf("topology.nodes must not be empty")
@@ -110,7 +107,7 @@ func validateNodePerformance(p NodePerformance) error {
 		return fmt.Errorf("queue_capacity must be positive")
 	}
 	if p.OverflowPolicy != "drop_new" {
-		return fmt.Errorf("unsupported overflow_policy %q; peerkit supports drop_new", p.OverflowPolicy)
+		return fmt.Errorf("unsupported overflow_policy %q; peerkit v0.1 supports drop_new", p.OverflowPolicy)
 	}
 	return validateDistribution(p.ProcessingDelay)
 }

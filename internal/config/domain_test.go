@@ -100,3 +100,45 @@ func generatedComponentsFromScenario(scenario *Scenario) [][]int {
 	}
 	return generatedComponents(len(scenario.Topology.Nodes), edges)
 }
+
+func TestDomainNormalDelayAssignsPerNodeMeans(t *testing.T) {
+	model := DomainTopologyConfig{Model: "path"}
+	first := domainScenario(model, 12)
+	first.Domain.Node.ProcessingDelay = Distribution{Type: "normal", MeanMS: 100, StdDevMS: 25}
+	second := domainScenario(model, 12)
+	second.Domain.Node.ProcessingDelay = Distribution{Type: "normal", MeanMS: 100, StdDevMS: 25}
+
+	resolveDomainForTest(t, first)
+	resolveDomainForTest(t, second)
+
+	means := make(map[float64]struct{})
+	for i, node := range first.Topology.Nodes {
+		got := node.Performance.ProcessingDelay
+		if got.Type != "normal" || got.StdDevMS != 25 {
+			t.Fatalf("node %d delay=%+v; want normal with stddev 25", i, got)
+		}
+		if got.MeanMS < 0 {
+			t.Fatalf("node %d has negative mean %f", i, got.MeanMS)
+		}
+		means[got.MeanMS] = struct{}{}
+		if got != second.Topology.Nodes[i].Performance.ProcessingDelay {
+			t.Fatalf("node %d mean assignment is not deterministic", i)
+		}
+	}
+	if len(means) == 1 {
+		t.Fatal("all generated nodes received the same mean")
+	}
+}
+
+func TestDomainNodeMeanSamplingDoesNotChangeTopology(t *testing.T) {
+	model := DomainTopologyConfig{Model: "er", P: floatPointer(0.08), EnsureConnected: true}
+	constant := domainScenario(model, 40)
+	normal := domainScenario(model, 40)
+	normal.Domain.Node.ProcessingDelay = Distribution{Type: "normal", MeanMS: 100, StdDevMS: 25}
+
+	resolveDomainForTest(t, constant)
+	resolveDomainForTest(t, normal)
+	if !reflect.DeepEqual(constant.Topology.Edges, normal.Topology.Edges) {
+		t.Fatal("node performance sampling changed the generated topology")
+	}
+}

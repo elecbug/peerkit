@@ -103,8 +103,9 @@ func generateRuntime(scenarioPath string, scenario *config.Scenario, options Run
 		port := scenario.Experiment.ControlBasePort + index
 		controlPorts[node.ID] = port
 		runtimeConfig := config.RuntimeNodeConfig{
-			RunID: runID, ExperimentName: scenario.Experiment.Name, Protocol: scenario.Protocol,
-			NodeID: node.ID, NodeIndex: index,
+			RunID: runID, ExperimentName: scenario.Experiment.Name,
+			Protocol: scenario.Protocol,
+			NodeID:   node.ID, NodeIndex: index,
 			Seed:          scenario.Experiment.Seed + int64(index)*1_000_003,
 			PrivateKey:    identity.privateKey,
 			ListenAddress: "/ip4/0.0.0.0/tcp/4001", ControlAddress: ":8080",

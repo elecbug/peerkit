@@ -29,9 +29,10 @@ import (
 	"github.com/k-p2plab/peerkit/internal/config"
 	"github.com/k-p2plab/peerkit/internal/metrics"
 	"github.com/k-p2plab/peerkit/internal/model"
+	"github.com/k-p2plab/peerkit/internal/protocols"
 )
 
-const ProtocolID = protocol.ID("/peerkit/eager-push/1.0.0")
+const ProtocolID = protocol.ID("/peerkit/flooding/2.0.0")
 
 type Peer struct {
 	ctx       context.Context
@@ -39,15 +40,15 @@ type Peer struct {
 	cfg       *config.RuntimeNodeConfig
 	host      host.Host
 	writer    *metrics.Writer
-	protocol  forwardingProtocol
 	startedAt time.Time
 
 	neighborsByNode map[string]config.RuntimeNeighborConfig
 	nodeByPeerID    map[peer.ID]string
 	senders         map[string]*edgeSender
 
-	seenMu sync.Mutex
-	seen   map[string]*forwardingState
+	stateMu   sync.Mutex
+	seen      map[string]struct{}
+	knowledge map[string]*messageKnowledge
 
 	processQueue chan processItem
 	sequence     atomic.Uint64
@@ -58,27 +59,27 @@ type processItem struct {
 	message    WireMessage
 	from       string
 	enqueuedAt time.Time
-	state      *forwardingState
 }
 
 type outboundItem struct {
-	message    WireMessage
+	frame      WireFrame
 	enqueuedAt time.Time
 }
 
 type edgeSender struct {
-	owner    *Peer
-	neighbor config.RuntimeNeighborConfig
-	queue    chan outboundItem
-	rng      *rand.Rand
-	streamMu sync.Mutex
-	stream   network.Stream
+	owner        *Peer
+	neighbor     config.RuntimeNeighborConfig
+	dataQueue    chan outboundItem
+	controlQueue chan outboundItem
+	dataRNG      *rand.Rand
+	controlRNG   *rand.Rand
+	streamMu     sync.Mutex
+	stream       network.Stream
 }
 
 type StatusResponse struct {
 	NodeID             string   `json:"node_id"`
 	PeerID             string   `json:"peer_id"`
-	Protocol           string   `json:"protocol"`
 	ConnectedNeighbors []string `json:"connected_neighbors"`
 	ExpectedNeighbors  []string `json:"expected_neighbors"`
 	ProcessQueueLength int      `json:"process_queue_length"`
@@ -95,12 +96,10 @@ type InjectResponse struct {
 }
 
 func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
-	forwarding, err := selectForwardingProtocol(cfg.Protocol)
-	if err != nil {
+	cfg.Protocol = protocols.Normalize(cfg.Protocol)
+	if err := protocols.Validate(cfg.Protocol); err != nil {
 		return nil, err
 	}
-	cfg.Protocol = forwarding.name()
-
 	privateKeyBytes, err := base64.StdEncoding.DecodeString(cfg.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("decode private key: %w", err)
@@ -131,7 +130,7 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 		libp2p.DisableRelay(),
 		libp2p.DisableMetrics(),
 		libp2p.Ping(false),
-		libp2p.UserAgent("peerkit/0.3.0"),
+		libp2p.UserAgent("peerkit/0.4.0"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create libp2p host: %w", err)
@@ -145,10 +144,11 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 
 	peerCtx, cancel := context.WithCancel(ctx)
 	p := &Peer{
-		ctx: peerCtx, cancel: cancel, cfg: cfg, host: h, writer: writer, protocol: forwarding,
+		ctx: peerCtx, cancel: cancel, cfg: cfg, host: h, writer: writer,
 		startedAt: time.Now(), neighborsByNode: neighborsByNode,
 		nodeByPeerID: nodeByPeerID, senders: make(map[string]*edgeSender, len(cfg.Neighbors)),
-		seen:         make(map[string]*forwardingState),
+		seen:         make(map[string]struct{}),
+		knowledge:    make(map[string]*messageKnowledge),
 		processQueue: make(chan processItem, cfg.Performance.QueueCapacity),
 	}
 
@@ -163,8 +163,10 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 		p.host.Peerstore().AddAddrs(id, []multiaddr.Multiaddr{address}, peerstore.PermanentAddrTTL)
 		sender := &edgeSender{
 			owner: p, neighbor: neighbor,
-			queue: make(chan outboundItem, neighbor.Network.QueueCapacity),
-			rng:   rand.New(rand.NewSource(stableSeed(cfg.Seed, cfg.NodeID+"->"+neighbor.NodeID))),
+			dataQueue:    make(chan outboundItem, neighbor.Network.QueueCapacity),
+			controlQueue: make(chan outboundItem, neighbor.Network.QueueCapacity),
+			dataRNG:      rand.New(rand.NewSource(stableSeed(cfg.Seed, cfg.NodeID+"->"+neighbor.NodeID+"-data"))),
+			controlRNG:   rand.New(rand.NewSource(stableSeed(cfg.Seed, cfg.NodeID+"->"+neighbor.NodeID+"-control"))),
 		}
 		p.senders[neighbor.NodeID] = sender
 		go sender.run(peerCtx)
@@ -291,7 +293,7 @@ func (p *Peer) Status() StatusResponse {
 	sort.Strings(connected)
 	sort.Strings(expected)
 	return StatusResponse{
-		NodeID: p.cfg.NodeID, PeerID: p.host.ID().String(), Protocol: p.cfg.Protocol,
+		NodeID: p.cfg.NodeID, PeerID: p.host.ID().String(),
 		ConnectedNeighbors: connected, ExpectedNeighbors: expected,
 		ProcessQueueLength: len(p.processQueue),
 	}
@@ -309,15 +311,15 @@ func (p *Peer) Inject(count int, interval time.Duration, payloadBytes int) {
 			Origin: p.cfg.NodeID, Sequence: sequence, CreatedAtNS: now.UnixNano(),
 			Hop: 0, PayloadBytes: payloadBytes,
 		}
-		state := p.protocol.newMessageState()
-		p.seenMu.Lock()
-		p.seen[message.ID] = state
-		p.seenMu.Unlock()
+		p.registerLocalMessage(message.ID)
 		p.record(metrics.Event{
 			Type: "message_created", MessageID: message.ID, Origin: message.Origin,
 			Sequence: message.Sequence, Hop: message.Hop, PayloadBytes: message.PayloadBytes,
 		})
-		p.enqueueProcessing(processItem{message: message, enqueuedAt: now, state: state})
+		if protocols.UsesIDontWant(p.cfg.Protocol) {
+			p.broadcastIDontWant(message, "")
+		}
+		p.enqueueProcessing(processItem{message: message, enqueuedAt: now})
 	}
 }
 
@@ -331,31 +333,25 @@ func (p *Peer) handleStream(stream network.Stream) {
 	}
 	reader := bufio.NewReaderSize(stream, 64*1024)
 	for {
-		message, err := readFrame(reader)
+		frame, err := readFrame(reader)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 				p.record(metrics.Event{Type: "stream_read_failed", From: from, Reason: err.Error()})
 			}
 			return
 		}
-		p.acceptMessage(message, from)
+		switch frame.Type {
+		case frameTypeData:
+			p.acceptMessage(frame.message(), from)
+		case frameTypeIDontWant:
+			p.acceptIDontWant(frame, from)
+		}
 	}
 }
 
 func (p *Peer) acceptMessage(message WireMessage, from string) {
 	now := time.Now()
-	p.seenMu.Lock()
-	state, duplicate := p.seen[message.ID]
-	if !duplicate {
-		state = p.protocol.newMessageState()
-		p.seen[message.ID] = state
-	}
-	p.seenMu.Unlock()
-
-	if duplicate && state != nil {
-		state.observeDuplicate(from)
-	}
-
+	duplicate := p.registerReceivedMessage(message.ID, from)
 	p.record(metrics.Event{
 		Type: "message_received", MessageID: message.ID, Origin: message.Origin,
 		From: from, Sequence: message.Sequence, Hop: message.Hop,
@@ -364,7 +360,32 @@ func (p *Peer) acceptMessage(message WireMessage, from string) {
 	if duplicate {
 		return
 	}
-	p.enqueueProcessing(processItem{message: message, from: from, enqueuedAt: now, state: state})
+	if protocols.UsesIDontWant(p.cfg.Protocol) {
+		p.broadcastIDontWant(message, from)
+	}
+	p.enqueueProcessing(processItem{message: message, from: from, enqueuedAt: now})
+}
+
+func (p *Peer) acceptIDontWant(frame WireFrame, from string) {
+	if !protocols.UsesIDontWant(p.cfg.Protocol) {
+		return
+	}
+	p.registerIDontWant(frame.MessageID, from)
+	p.record(metrics.Event{
+		Type: "control_received", FrameType: frameTypeIDontWant,
+		MessageID: frame.MessageID, Origin: frame.Origin,
+		From: from, Sequence: frame.Sequence, ControlBytes: frame.simulatedBytes(),
+	})
+}
+
+func (p *Peer) broadcastIDontWant(message WireMessage, except string) {
+	frame := newIDontWantFrame(message)
+	for _, neighbor := range p.cfg.Neighbors {
+		if neighbor.NodeID == except {
+			continue
+		}
+		p.senders[neighbor.NodeID].enqueueControl(frame)
+	}
 }
 
 func (p *Peer) enqueueProcessing(item processItem) {
@@ -372,7 +393,6 @@ func (p *Peer) enqueueProcessing(item processItem) {
 	case p.processQueue <- item:
 	case <-p.ctx.Done():
 	default:
-		item.state.close()
 		p.record(metrics.Event{
 			Type: "message_dropped", MessageID: item.message.ID, Origin: item.message.Origin,
 			From: item.from, Sequence: item.message.Sequence, Hop: item.message.Hop,
@@ -393,92 +413,168 @@ func (p *Peer) runWorker(ctx context.Context, workerIndex int) {
 			if !sleepContext(ctx, processingDelay) {
 				return
 			}
-			suppressed := item.state.freeze()
 			p.record(metrics.Event{
 				Type: "message_processed", MessageID: item.message.ID, Origin: item.message.Origin,
 				From: item.from, Sequence: item.message.Sequence, Hop: item.message.Hop,
 				PayloadBytes: item.message.PayloadBytes, QueueWaitNS: queueWait.Nanoseconds(),
 				ProcessingNS: processingDelay.Nanoseconds(),
 			})
-			for nodeID, sender := range p.senders {
+
+			suppressed := p.beginForwarding(item.message.ID)
+			for _, neighbor := range p.cfg.Neighbors {
+				nodeID := neighbor.NodeID
 				if nodeID == item.from {
-					continue
-				}
-				if _, skip := suppressed[nodeID]; skip {
-					p.record(metrics.Event{
-						Type: "message_suppressed", MessageID: item.message.ID, Origin: item.message.Origin,
-						To: nodeID, Sequence: item.message.Sequence, Hop: item.message.Hop + 1,
-						PayloadBytes: item.message.PayloadBytes, Reason: "duplicate_neighbor",
-					})
 					continue
 				}
 				forward := item.message
 				forward.Hop++
-				sender.enqueue(forward)
+				if reason, skip := suppressed[nodeID]; skip {
+					p.recordSuppression(forward, nodeID, reason)
+					continue
+				}
+				p.senders[nodeID].enqueueData(newDataFrame(forward))
 			}
 		}
 	}
 }
 
-func (s *edgeSender) enqueue(message WireMessage) {
-	item := outboundItem{message: message, enqueuedAt: time.Now()}
+func (p *Peer) recordSuppression(message WireMessage, target, reason string) {
+	p.record(metrics.Event{
+		Type: "message_suppressed", FrameType: frameTypeData,
+		MessageID: message.ID, Origin: message.Origin, To: target,
+		Sequence: message.Sequence, Hop: message.Hop,
+		PayloadBytes: message.PayloadBytes, Reason: reason,
+	})
+}
+
+func (s *edgeSender) enqueueData(frame WireFrame) {
+	if s.owner.shouldSuppressQueued(frame.MessageID, s.neighbor.NodeID) {
+		s.owner.recordSuppression(frame.message(), s.neighbor.NodeID, "idontwant")
+		return
+	}
+	item := outboundItem{frame: frame, enqueuedAt: time.Now()}
 	select {
-	case s.queue <- item:
+	case s.dataQueue <- item:
 	case <-s.owner.ctx.Done():
 	default:
 		s.owner.record(metrics.Event{
-			Type: "message_dropped", MessageID: message.ID, Origin: message.Origin,
-			To: s.neighbor.NodeID, Sequence: message.Sequence, Hop: message.Hop,
-			PayloadBytes: message.PayloadBytes, Reason: "edge_queue_full",
+			Type: "message_dropped", FrameType: frameTypeData,
+			MessageID: frame.MessageID, Origin: frame.Origin,
+			To: s.neighbor.NodeID, Sequence: frame.Sequence, Hop: frame.Hop,
+			PayloadBytes: frame.PayloadBytes, Reason: "edge_queue_full",
+		})
+	}
+}
+
+func (s *edgeSender) enqueueControl(frame WireFrame) {
+	item := outboundItem{frame: frame, enqueuedAt: time.Now()}
+	select {
+	case s.controlQueue <- item:
+	case <-s.owner.ctx.Done():
+	default:
+		s.owner.record(metrics.Event{
+			Type: "control_dropped", FrameType: frame.Type,
+			MessageID: frame.MessageID, Origin: frame.Origin,
+			To: s.neighbor.NodeID, Sequence: frame.Sequence,
+			ControlBytes: frame.simulatedBytes(), Reason: "edge_control_queue_full",
 		})
 	}
 }
 
 func (s *edgeSender) run(ctx context.Context) {
 	for {
+		// Control frames are intentionally prioritized over payload frames.
 		select {
 		case <-ctx.Done():
 			s.closeStream()
 			return
-		case item := <-s.queue:
+		case item := <-s.controlQueue:
+			s.send(ctx, item)
+			continue
+		default:
+		}
+
+		select {
+		case <-ctx.Done():
+			s.closeStream()
+			return
+		case item := <-s.controlQueue:
+			s.send(ctx, item)
+		case item := <-s.dataQueue:
 			s.send(ctx, item)
 		}
 	}
 }
 
 func (s *edgeSender) send(ctx context.Context, item outboundItem) {
+	frame := item.frame
 	queueWait := time.Since(item.enqueuedAt)
-	if s.neighbor.Network.LossRate > 0 && s.rng.Float64() < s.neighbor.Network.LossRate {
-		s.owner.record(metrics.Event{
-			Type: "message_dropped", MessageID: item.message.ID, Origin: item.message.Origin,
-			To: s.neighbor.NodeID, Sequence: item.message.Sequence, Hop: item.message.Hop,
-			PayloadBytes: item.message.PayloadBytes, QueueWaitNS: queueWait.Nanoseconds(),
-			Reason: "emulated_loss", LossRate: s.neighbor.Network.LossRate,
-		})
+	if frame.Type == frameTypeData && s.owner.shouldSuppressQueued(frame.MessageID, s.neighbor.NodeID) {
+		s.owner.recordSuppression(frame.message(), s.neighbor.NodeID, "idontwant")
 		return
 	}
 
-	propagationDelay := model.SampleDuration(s.neighbor.Network.Delay, s.rng)
-	serializationDelay := model.SerializationDelay(item.message.PayloadBytes, s.neighbor.Network.BandwidthMbps)
+	rng := s.dataRNG
+	if frame.Type != frameTypeData {
+		rng = s.controlRNG
+	}
+	if s.neighbor.Network.LossRate > 0 && rng.Float64() < s.neighbor.Network.LossRate {
+		s.recordDrop(frame, queueWait, 0, 0, "emulated_loss")
+		return
+	}
+
+	propagationDelay := model.SampleDuration(s.neighbor.Network.Delay, rng)
+	serializationDelay := model.SerializationDelay(frame.simulatedBytes(), s.neighbor.Network.BandwidthMbps)
 	if !sleepContext(ctx, propagationDelay+serializationDelay) {
 		return
 	}
+	if frame.Type == frameTypeData && s.owner.shouldSuppressQueued(frame.MessageID, s.neighbor.NodeID) {
+		s.owner.recordSuppression(frame.message(), s.neighbor.NodeID, "idontwant")
+		return
+	}
 
-	if err := s.write(ctx, item.message); err != nil {
+	if err := s.write(ctx, frame); err != nil {
+		s.recordDrop(frame, queueWait, propagationDelay, serializationDelay, "stream_write_failed: "+err.Error())
+		return
+	}
+	if frame.Type == frameTypeData {
 		s.owner.record(metrics.Event{
-			Type: "message_dropped", MessageID: item.message.ID, Origin: item.message.Origin,
-			To: s.neighbor.NodeID, Sequence: item.message.Sequence, Hop: item.message.Hop,
-			PayloadBytes: item.message.PayloadBytes, QueueWaitNS: queueWait.Nanoseconds(),
+			Type: "message_sent", FrameType: frameTypeData,
+			MessageID: frame.MessageID, Origin: frame.Origin,
+			To: s.neighbor.NodeID, Sequence: frame.Sequence, Hop: frame.Hop,
+			PayloadBytes: frame.PayloadBytes, QueueWaitNS: queueWait.Nanoseconds(),
 			EdgeDelayNS: propagationDelay.Nanoseconds(), SerializationNS: serializationDelay.Nanoseconds(),
-			Reason: "stream_write_failed: " + err.Error(),
 		})
 		return
 	}
 	s.owner.record(metrics.Event{
-		Type: "message_sent", MessageID: item.message.ID, Origin: item.message.Origin,
-		To: s.neighbor.NodeID, Sequence: item.message.Sequence, Hop: item.message.Hop,
-		PayloadBytes: item.message.PayloadBytes, QueueWaitNS: queueWait.Nanoseconds(),
+		Type: "control_sent", FrameType: frame.Type,
+		MessageID: frame.MessageID, Origin: frame.Origin,
+		To: s.neighbor.NodeID, Sequence: frame.Sequence,
+		ControlBytes: frame.simulatedBytes(), QueueWaitNS: queueWait.Nanoseconds(),
 		EdgeDelayNS: propagationDelay.Nanoseconds(), SerializationNS: serializationDelay.Nanoseconds(),
+	})
+}
+
+func (s *edgeSender) recordDrop(frame WireFrame, queueWait, edgeDelay, serialization time.Duration, reason string) {
+	if frame.Type == frameTypeData {
+		s.owner.record(metrics.Event{
+			Type: "message_dropped", FrameType: frameTypeData,
+			MessageID: frame.MessageID, Origin: frame.Origin,
+			To: s.neighbor.NodeID, Sequence: frame.Sequence, Hop: frame.Hop,
+			PayloadBytes: frame.PayloadBytes, QueueWaitNS: queueWait.Nanoseconds(),
+			EdgeDelayNS: edgeDelay.Nanoseconds(), SerializationNS: serialization.Nanoseconds(),
+			Reason: reason, LossRate: s.neighbor.Network.LossRate,
+		})
+		return
+	}
+	s.owner.record(metrics.Event{
+		Type: "control_dropped", FrameType: frame.Type,
+		MessageID: frame.MessageID, Origin: frame.Origin,
+		To: s.neighbor.NodeID, Sequence: frame.Sequence,
+		ControlBytes: frame.simulatedBytes(), QueueWaitNS: queueWait.Nanoseconds(),
+		EdgeDelayNS: edgeDelay.Nanoseconds(), SerializationNS: serialization.Nanoseconds(),
+		Reason: reason, LossRate: s.neighbor.Network.LossRate,
 	})
 }
 
@@ -506,7 +602,7 @@ func (s *edgeSender) ensureStreamLocked(ctx context.Context) error {
 	return nil
 }
 
-func (s *edgeSender) write(ctx context.Context, message WireMessage) error {
+func (s *edgeSender) write(ctx context.Context, frame WireFrame) error {
 	s.streamMu.Lock()
 	defer s.streamMu.Unlock()
 
@@ -515,7 +611,7 @@ func (s *edgeSender) write(ctx context.Context, message WireMessage) error {
 			return err
 		}
 		writer := bufio.NewWriterSize(s.stream, 64*1024)
-		if err := writeFrame(writer, message); err == nil {
+		if err := writeFrame(writer, frame); err == nil {
 			return nil
 		}
 		_ = s.stream.Reset()
@@ -576,8 +672,8 @@ func (p *Peer) record(event metrics.Event) {
 	event.TimestampNS = time.Now().UnixNano()
 	event.RunID = p.cfg.RunID
 	event.Experiment = p.cfg.ExperimentName
-	event.Protocol = p.cfg.Protocol
 	event.Node = p.cfg.NodeID
+	event.Protocol = p.cfg.Protocol
 	if err := p.writer.Write(event); err != nil {
 		log.Printf("write event: %v", err)
 	}

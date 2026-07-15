@@ -24,6 +24,10 @@ type MessageSummary struct {
 	Duplicates        int     `json:"duplicates"`
 	Drops             int     `json:"drops"`
 	Suppressions      int     `json:"suppressions"`
+	ControlSent       int     `json:"control_sent"`
+	ControlReceived   int     `json:"control_received"`
+	ControlDrops      int     `json:"control_drops"`
+	ControlBytesSent  int     `json:"control_bytes_sent"`
 }
 
 type RunSummary struct {
@@ -36,6 +40,10 @@ type RunSummary struct {
 	TotalDuplicates          int     `json:"total_duplicates"`
 	TotalDrops               int     `json:"total_drops"`
 	TotalSuppressions        int     `json:"total_suppressions"`
+	TotalControlSent         int     `json:"total_control_sent"`
+	TotalControlReceived     int     `json:"total_control_received"`
+	TotalControlDrops        int     `json:"total_control_drops"`
+	TotalControlBytesSent    int     `json:"total_control_bytes_sent"`
 }
 
 type messageAccumulator struct {
@@ -47,6 +55,10 @@ type messageAccumulator struct {
 	duplicates    int
 	drops         int
 	suppressions  int
+	controlSent   int
+	controlRecv   int
+	controlDrops  int
+	controlBytes  int
 }
 
 func Aggregate(resultDir string, nodeCount int) (*RunSummary, error) {
@@ -59,11 +71,11 @@ func Aggregate(resultDir string, nodeCount int) (*RunSummary, error) {
 	}
 
 	messages := make(map[string]*messageAccumulator)
-	protocolName := ""
+	protocol := ""
 	for _, path := range files {
 		if err := readEvents(path, func(event Event) {
-			if protocolName == "" && event.Protocol != "" {
-				protocolName = event.Protocol
+			if protocol == "" && event.Protocol != "" {
+				protocol = event.Protocol
 			}
 			if event.MessageID == "" {
 				return
@@ -94,6 +106,13 @@ func Aggregate(resultDir string, nodeCount int) (*RunSummary, error) {
 				acc.drops++
 			case "message_suppressed":
 				acc.suppressions++
+			case "control_sent":
+				acc.controlSent++
+				acc.controlBytes += event.ControlBytes
+			case "control_received":
+				acc.controlRecv++
+			case "control_dropped":
+				acc.controlDrops++
 			}
 		}); err != nil {
 			return nil, err
@@ -115,7 +134,10 @@ func Aggregate(resultDir string, nodeCount int) (*RunSummary, error) {
 			LastUniqueAtNS: acc.lastUniqueAt, ReachedNodes: len(acc.reached),
 			TotalNodes: nodeCount, Reachability: reachability,
 			CompletionDelayMS: delayMS, Transmissions: acc.transmissions,
-			Duplicates: acc.duplicates, Drops: acc.drops, Suppressions: acc.suppressions,
+			Duplicates: acc.duplicates, Drops: acc.drops,
+			Suppressions: acc.suppressions, ControlSent: acc.controlSent,
+			ControlReceived: acc.controlRecv, ControlDrops: acc.controlDrops,
+			ControlBytesSent: acc.controlBytes,
 		})
 	}
 	sort.Slice(rows, func(i, j int) bool {
@@ -125,7 +147,7 @@ func Aggregate(resultDir string, nodeCount int) (*RunSummary, error) {
 		return rows[i].CreatedAtNS < rows[j].CreatedAtNS
 	})
 
-	summary := &RunSummary{Protocol: protocolName, Messages: len(rows), Nodes: nodeCount}
+	summary := &RunSummary{Protocol: protocol, Messages: len(rows), Nodes: nodeCount}
 	for _, row := range rows {
 		summary.AverageReachability += row.Reachability
 		summary.AverageCompletionDelayMS += row.CompletionDelayMS
@@ -133,6 +155,10 @@ func Aggregate(resultDir string, nodeCount int) (*RunSummary, error) {
 		summary.TotalDuplicates += row.Duplicates
 		summary.TotalDrops += row.Drops
 		summary.TotalSuppressions += row.Suppressions
+		summary.TotalControlSent += row.ControlSent
+		summary.TotalControlReceived += row.ControlReceived
+		summary.TotalControlDrops += row.ControlDrops
+		summary.TotalControlBytesSent += row.ControlBytesSent
 	}
 	if len(rows) > 0 {
 		summary.AverageReachability /= float64(len(rows))
@@ -182,7 +208,7 @@ func writeMessageCSV(path string, rows []MessageSummary) error {
 	defer file.Close()
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
-	if err := writer.Write([]string{"message_id", "origin", "created_at_ns", "last_unique_at_ns", "reached_nodes", "total_nodes", "reachability", "completion_delay_ms", "transmissions", "duplicates", "drops", "suppressions"}); err != nil {
+	if err := writer.Write([]string{"message_id", "origin", "created_at_ns", "last_unique_at_ns", "reached_nodes", "total_nodes", "reachability", "completion_delay_ms", "transmissions", "duplicates", "drops", "suppressions", "control_sent", "control_received", "control_drops", "control_bytes_sent"}); err != nil {
 		return err
 	}
 	for _, row := range rows {
@@ -193,7 +219,9 @@ func writeMessageCSV(path string, rows []MessageSummary) error {
 			strconv.FormatFloat(row.Reachability, 'f', 6, 64),
 			strconv.FormatFloat(row.CompletionDelayMS, 'f', 3, 64),
 			strconv.Itoa(row.Transmissions), strconv.Itoa(row.Duplicates), strconv.Itoa(row.Drops),
-			strconv.Itoa(row.Suppressions),
+			strconv.Itoa(row.Suppressions), strconv.Itoa(row.ControlSent),
+			strconv.Itoa(row.ControlReceived), strconv.Itoa(row.ControlDrops),
+			strconv.Itoa(row.ControlBytesSent),
 		}
 		if err := writer.Write(record); err != nil {
 			return err

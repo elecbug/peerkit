@@ -4,8 +4,9 @@ type Event struct {
 	TimestampNS     int64   `json:"timestamp_ns"`
 	RunID           string  `json:"run_id"`
 	Experiment      string  `json:"experiment"`
-	Protocol        string  `json:"protocol"`
 	Type            string  `json:"type"`
+	Protocol        string  `json:"protocol,omitempty"`
+	FrameType       string  `json:"frame_type,omitempty"`
 	Node            string  `json:"node"`
 	PeerID          string  `json:"peer_id,omitempty"`
 	MessageID       string  `json:"message_id,omitempty"`
@@ -15,6 +16,7 @@ type Event struct {
 	Sequence        uint64  `json:"sequence,omitempty"`
 	Hop             uint32  `json:"hop,omitempty"`
 	PayloadBytes    int     `json:"payload_bytes,omitempty"`
+	ControlBytes    int     `json:"control_bytes,omitempty"`
 	Duplicate       bool    `json:"duplicate,omitempty"`
 	QueueWaitNS     int64   `json:"queue_wait_ns,omitempty"`
 	ProcessingNS    int64   `json:"processing_ns,omitempty"`

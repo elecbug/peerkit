@@ -1,108 +1,96 @@
 package p2p
 
 import (
-	"fmt"
-	"sync"
-
 	"github.com/k-p2plab/peerkit/internal/protocols"
 )
 
-// forwardingProtocol creates per-message forwarding state. Protocol selection
-// is centralized here so additional propagation algorithms can be added
-// without spreading YAML-specific conditionals through the peer runtime.
-type forwardingProtocol interface {
-	name() string
-	newMessageState() *forwardingState
+type messageKnowledge struct {
+	duplicateSenders  map[string]struct{}
+	dontWantPeers     map[string]struct{}
+	forwardingStarted bool
 }
 
-type baseFloodingProtocol struct{}
-
-func (baseFloodingProtocol) name() string {
-	return protocols.BaseFlooding
+func newMessageKnowledge() *messageKnowledge {
+	return &messageKnowledge{
+		duplicateSenders: make(map[string]struct{}),
+		dontWantPeers:    make(map[string]struct{}),
+	}
 }
 
-func (baseFloodingProtocol) newMessageState() *forwardingState {
-	return nil
+func (p *Peer) registerLocalMessage(messageID string) {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	p.seen[messageID] = struct{}{}
+	if p.knowledge[messageID] == nil {
+		p.knowledge[messageID] = newMessageKnowledge()
+	}
 }
 
-type duplicateAwareFloodingProtocol struct{}
+func (p *Peer) registerReceivedMessage(messageID, from string) bool {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
 
-func (duplicateAwareFloodingProtocol) name() string {
-	return protocols.DuplicateAwareFlooding
+	state := p.knowledge[messageID]
+	if state == nil {
+		state = newMessageKnowledge()
+		p.knowledge[messageID] = state
+	}
+	if _, duplicate := p.seen[messageID]; duplicate {
+		if protocols.UsesDuplicateNeighborSuppression(p.cfg.Protocol) && !state.forwardingStarted {
+			state.duplicateSenders[from] = struct{}{}
+		}
+		return true
+	}
+	p.seen[messageID] = struct{}{}
+	return false
 }
 
-func (duplicateAwareFloodingProtocol) newMessageState() *forwardingState {
-	return newForwardingState()
+func (p *Peer) registerIDontWant(messageID, from string) {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	state := p.knowledge[messageID]
+	if state == nil {
+		state = newMessageKnowledge()
+		p.knowledge[messageID] = state
+	}
+	state.dontWantPeers[from] = struct{}{}
 }
 
-func selectForwardingProtocol(name string) (forwardingProtocol, error) {
-	switch name {
-	case "", protocols.BaseFlooding:
-		return baseFloodingProtocol{}, nil
+func (p *Peer) beginForwarding(messageID string) map[string]string {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+
+	state := p.knowledge[messageID]
+	if state == nil {
+		state = newMessageKnowledge()
+		p.knowledge[messageID] = state
+	}
+	state.forwardingStarted = true
+
+	suppressed := make(map[string]string)
+	switch protocols.Normalize(p.cfg.Protocol) {
 	case protocols.DuplicateAwareFlooding:
-		return duplicateAwareFloodingProtocol{}, nil
-	default:
-		return nil, fmt.Errorf("unsupported forwarding protocol %q", name)
+		for nodeID := range state.duplicateSenders {
+			suppressed[nodeID] = "duplicate_neighbor"
+		}
+	case protocols.IDontWantFlooding:
+		for nodeID := range state.dontWantPeers {
+			suppressed[nodeID] = "idontwant"
+		}
 	}
+	return suppressed
 }
 
-// forwardingState tracks neighbors that demonstrably already hold a message.
-// It is only allocated by duplicate_aware_flooding. The state is frozen when
-// local processing completes, giving a precise boundary for suppression.
-type forwardingState struct {
-	mu      sync.Mutex
-	pending bool
-	holders map[string]struct{}
-}
-
-func newForwardingState() *forwardingState {
-	return &forwardingState{
-		pending: true,
-		holders: make(map[string]struct{}),
-	}
-}
-
-// observeDuplicate records a neighbor as already holding the message while
-// forwarding is still pending. It returns true only for the first observation.
-func (s *forwardingState) observeDuplicate(from string) bool {
-	if s == nil || from == "" {
+func (p *Peer) shouldSuppressQueued(messageID, target string) bool {
+	if !protocols.UsesIDontWant(p.cfg.Protocol) {
 		return false
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if !s.pending {
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	state := p.knowledge[messageID]
+	if state == nil {
 		return false
 	}
-	if _, exists := s.holders[from]; exists {
-		return false
-	}
-	s.holders[from] = struct{}{}
-	return true
-}
-
-// freeze closes the suppression window and returns a stable holder snapshot.
-func (s *forwardingState) freeze() map[string]struct{} {
-	if s == nil {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pending = false
-	if len(s.holders) == 0 {
-		return nil
-	}
-	result := make(map[string]struct{}, len(s.holders))
-	for nodeID := range s.holders {
-		result[nodeID] = struct{}{}
-	}
-	return result
-}
-
-func (s *forwardingState) close() {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	s.pending = false
-	s.mu.Unlock()
+	_, suppressed := state.dontWantPeers[target]
+	return suppressed
 }

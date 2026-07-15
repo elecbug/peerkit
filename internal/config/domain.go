@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"hash/fnv"
 	"math/rand"
 	"sort"
 	"strconv"
@@ -51,11 +52,16 @@ func (s *Scenario) ExpandDomain() error {
 	}
 
 	// Domain-level performance settings override top-level defaults while still
-	// inheriting fields omitted by the compact declaration.
+	// inheriting fields omitted by the compact declaration. For a normal
+	// processing-delay declaration, each generated node receives a permanent
+	// mean sampled around the declared mean. The declared standard deviation is
+	// retained as the per-message standard deviation for every node.
+	var domainNodeTemplate *NodePerformance
 	if domain.Node != nil {
 		resolved := *domain.Node
 		mergeNodePerformance(&resolved, s.Defaults.Node)
 		s.Defaults.Node = resolved
+		domainNodeTemplate = &resolved
 	}
 	if domain.Edge != nil {
 		resolved := cloneEdgeNetwork(*domain.Edge)
@@ -64,22 +70,28 @@ func (s *Scenario) ExpandDomain() error {
 	}
 
 	nodes := make([]NodeSpec, nodeCount)
+	nodeRNG := rand.New(rand.NewSource(domainSeed(s.Experiment.Seed, "node-performance")))
 	for i := range nodes {
 		id := fmt.Sprintf("%s%0*d", idPrefix, zeroPadding, i)
 		nodes[i] = NodeSpec{ID: id}
+		if domainNodeTemplate != nil {
+			performance := *domainNodeTemplate
+			performance.ProcessingDelay = resolveDomainNodeDelay(performance.ProcessingDelay, nodeRNG)
+			nodes[i].Performance = &performance
+		}
 		if domain.Resources != nil {
 			resources := *domain.Resources
 			nodes[i].Resources = &resources
 		}
 	}
 
-	rng := rand.New(rand.NewSource(s.Experiment.Seed))
-	generated, err := generateDomainEdges(nodeCount, domain.Topology, rng)
+	topologyRNG := rand.New(rand.NewSource(s.Experiment.Seed))
+	generated, err := generateDomainEdges(nodeCount, domain.Topology, topologyRNG)
 	if err != nil {
 		return err
 	}
 	if domain.Topology.EnsureConnected {
-		generated = connectGeneratedComponents(nodeCount, generated, rng)
+		generated = connectGeneratedComponents(nodeCount, generated, topologyRNG)
 	}
 	generated = normalizeGeneratedEdges(generated)
 
@@ -97,6 +109,22 @@ func (s *Scenario) ExpandDomain() error {
 		Edges:    edges,
 	}
 	return nil
+}
+
+func resolveDomainNodeDelay(distribution Distribution, rng *rand.Rand) Distribution {
+	if strings.EqualFold(distribution.Type, "normal") {
+		distribution.MeanMS += rng.NormFloat64() * distribution.StdDevMS
+		if distribution.MeanMS < 0 {
+			distribution.MeanMS = 0
+		}
+	}
+	return distribution
+}
+
+func domainSeed(base int64, purpose string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte("peerkit-domain-" + purpose))
+	return base ^ int64(h.Sum64())
 }
 
 func cloneEdgeNetwork(value EdgeNetwork) EdgeNetwork {

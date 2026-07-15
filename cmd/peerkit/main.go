@@ -16,7 +16,7 @@ import (
 	"github.com/k-p2plab/peerkit/internal/controller"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -122,6 +122,11 @@ func runCommand(args []string) {
 	fmt.Printf("protocol: %s\n", summary.Protocol)
 	fmt.Printf("transmissions: %d, duplicates: %d, drops: %d, suppressions: %d\n",
 		summary.TotalTransmissions, summary.TotalDuplicates, summary.TotalDrops, summary.TotalSuppressions)
+	if summary.TotalControlSent > 0 || summary.TotalControlDrops > 0 {
+		fmt.Printf("control sent: %d, received: %d, drops: %d, bytes: %d\n",
+			summary.TotalControlSent, summary.TotalControlReceived,
+			summary.TotalControlDrops, summary.TotalControlBytesSent)
+	}
 }
 
 func downCommand(args []string) {

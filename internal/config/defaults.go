@@ -8,9 +8,6 @@ import (
 
 func (s *Scenario) ApplyDefaults() {
 	s.Protocol = protocols.Normalize(s.Protocol)
-	if s.Protocol == "" {
-		s.Protocol = protocols.BaseFlooding
-	}
 	if s.Version == 0 {
 		s.Version = 1
 	}

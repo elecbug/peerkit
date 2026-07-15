@@ -10,12 +10,14 @@ test:
 validate:
 	go run ./cmd/peerkit validate examples/edge.yaml
 	go run ./cmd/peerkit validate examples/er-domain.yaml
+	go run ./cmd/peerkit validate examples/duplicate-aware-domain.yaml
+	go run ./cmd/peerkit validate examples/idontwant-domain.yaml
 
 expand:
 	go run ./cmd/peerkit expand -o /tmp/peerkit-resolved-domain.yaml examples/er-domain.yaml
 
 run:
-	go run ./cmd/peerkit run examples/edge.yaml
+	go run ./cmd/peerkit run examples/er-domain.yaml
 
 clean:
 	rm -rf bin .peerkit

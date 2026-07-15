@@ -2,119 +2,96 @@
 
 `peerkit` is a static-topology P2P propagation experiment tool built on go-libp2p and Docker Compose.
 
-It creates one Docker container per peer, restricts libp2p connections to the configured graph, propagates messages with eager-push flooding, and records JSONL/CSV metrics. Node processing performance and per-edge delay, loss, bandwidth, and queue capacity are configurable.
+It creates one container per peer, restricts libp2p connections to the configured graph, applies node and edge performance models, injects traffic, and produces JSONL/CSV experiment results.
 
 ## Current scope
 
 - Single Docker host
 - Static, undirected topology
 - Explicit edge-list or adjacency-matrix input
-- Generated topology domain input for large experiments
-- ER, BA, WS, ring, path, complete, and grid generators
-- Deterministic topology and random traffic-source generation from `experiment.seed`
-- One libp2p host per container
-- Strict neighbor allow-list through `ConnectionGater`
-- Selectable flooding protocol: `base_flooding` or `duplicate_aware_flooding`
-- Node processing delay and worker pool
-- Per-directed-edge transmission queue
-- Application-level propagation delay, loss, and bandwidth emulation
-- Docker CPU and memory limits
-- Fixed or uniformly random per-message propagation sources
-- Per-message result aggregation
-
-Dynamic topology, churn, GossipSub, Kademlia, mDNS, NAT traversal, and multi-host deployment are intentionally excluded from v0.3.0.
+- Generated ER, BA, WS, ring, path, complete, and grid domains
+- Deterministic generation from `experiment.seed`
+- Fixed or random per-message traffic sources
+- Three flooding protocols
+- Node processing delay, workers, and queues
+- Edge delay, loss, bandwidth, and queues
+- Per-message propagation and control-plane metrics
 
 ## Requirements
 
 - Go 1.23 or later
 - Docker Engine or Docker Desktop
-- Docker Compose v2 (`docker compose`)
+- Docker Compose v2
 
 ## Quick start
 
 ```bash
-go mod tidy
-go run ./cmd/peerkit validate examples/edge.yaml
-go run ./cmd/peerkit run examples/edge.yaml
-```
-
-A generated 100-node ER experiment can be validated and expanded without defining every node:
-
-```bash
 go run ./cmd/peerkit validate examples/er-domain.yaml
-go run ./cmd/peerkit expand -o /tmp/resolved-domain.yaml examples/er-domain.yaml
+go run ./cmd/peerkit expand -o resolved.yaml examples/er-domain.yaml
 go run ./cmd/peerkit run examples/er-domain.yaml
 ```
 
-The `run` command:
-
-1. validates and expands the scenario;
-2. generates libp2p identities and per-peer runtime configuration;
-3. builds the `peerkit-peer:dev` image;
-4. starts one container per node;
-5. forms and verifies the requested topology;
-6. injects the configured traffic;
-7. writes raw events and aggregate results;
-8. removes the containers unless `--keep` is set.
-
-Use an already-built image:
+Use an existing image:
 
 ```bash
 docker build -t peerkit-peer:dev -f deploy/Dockerfile .
-go run ./cmd/peerkit run --no-build examples/edge.yaml
+go run ./cmd/peerkit run --no-build examples/er-domain.yaml
 ```
 
-Keep the stopped containers for inspection after the experiment:
+## Protocol selection
 
-```bash
-go run ./cmd/peerkit run --keep examples/edge.yaml
-```
+The top-level `protocol` field selects the forwarding protocol. Omitting it defaults to `base_flooding`.
 
-Stop a retained run:
-
-```bash
-go run ./cmd/peerkit down .peerkit/runs/<run-directory>
-```
-
-## Flooding protocols
-
-The top-level `protocol` field selects the forwarding algorithm used by every peer in a run.
-
-### Base flooding
+### `base_flooding`
 
 ```yaml
-version: 1
 protocol: base_flooding
 ```
 
-`base_flooding` reproduces the original peerkit behavior. A peer processes the first copy of a message and forwards it to every neighbor except the neighbor that supplied that first copy. Later copies are counted as duplicates and discarded, but they do not modify the already pending forwarding set.
+A node forwards the first received copy to every neighbor except the peer that supplied that first copy. Later duplicates are recorded and discarded, but they do not change an already planned forwarding set.
 
-### Duplicate-Aware Flooding (DAF)
+### `duplicate_aware_flooding`
 
 ```yaml
-version: 1
 protocol: duplicate_aware_flooding
 ```
 
-`duplicate_aware_flooding` adds implicit multi-path suppression. While the first copy is queued or being processed, every neighbor that sends another copy is known to already hold the message. At the instant local processing completes, peerkit freezes that holder set and omits those neighbors from forwarding. Duplicates arriving after the freeze are still counted but cannot cancel forwarding that has already begun.
+A node records every neighbor that sends a duplicate while the first copy is still queued or being processed. At processing completion, those neighbors are excluded from forwarding.
 
-The protocol emits a `message_suppressed` event for every transmission avoided in this way. `messages.csv` contains a `suppressions` column and `summary.json` contains `total_suppressions`. The first-copy sender is already excluded by both protocols and is therefore not counted as a suppression.
+This is an implicit suppression protocol: a duplicate payload must arrive before the sender can be excluded.
 
-For backward compatibility, an omitted `protocol` field defaults to `base_flooding`. Explicitly declaring it is recommended for reproducible experiments.
+### `idontwant_flooding`
+
+```yaml
+protocol: idontwant_flooding
+```
+
+When a node receives the first copy, it immediately sends an `IDONTWANT(message_id)` control frame to its other neighbors. A peer that receives the control frame suppresses a payload transmission to that neighbor if the payload has not yet been written.
+
+The implementation models the control plane explicitly:
+
+- IDONTWANT frames use the same edge delay, loss rate, and bandwidth model.
+- Control frames use a separate prioritized per-edge queue.
+- Control and payload random streams are separated so control traffic does not consume payload delay/loss samples.
+- A control frame can suppress a payload before enqueue, while queued, or during the emulated edge delay.
+- A control frame arriving after the payload write cannot cancel that transmission.
+
+This is a GossipSub-inspired experiment protocol, not a full GossipSub implementation. It does not create topic meshes, IHAVE/IWANT gossip, scoring, or heartbeats.
 
 ## Compact domain format
 
-`domain` is an alternative to `topology`. The two forms cannot be used together. A domain declaration is expanded into explicit nodes and edges before execution.
+`domain` generates explicit nodes and edges before execution.
 
 ```yaml
 version: 1
-protocol: duplicate_aware_flooding
+protocol: idontwant_flooding
 
 experiment:
   name: er-domain-demo
   seed: 42
   duration_ms: 12000
   warmup_ms: 1000
+  control_base_port: 18080
 
 domain:
   n: 100
@@ -146,24 +123,54 @@ traffic:
     payload_size_bytes: 1024
 ```
 
-`n` is the node count; `node_count` is accepted as an explicit alias. Generated IDs are `id_prefix + zero-padded index`. If `zero_padding` is omitted, peerkit uses the number of digits in `count - 1`. For example, 100 nodes become `n000` through `n099`.
+`n` and `node_count` are aliases. Generated identifiers use `id_prefix` and `zero_padding`.
 
-### Supported topology generators
+### Domain-level node heterogeneity
 
-#### Erdős–Rényi
+For a generated domain, this declaration has hierarchical semantics:
+
+```yaml
+node:
+  processing_delay: "normal(mean=100ms, stddev=25ms)"
+```
+
+For node `i`, peerkit first assigns a permanent node mean:
+
+```text
+mu_i ~ max(0, Normal(100 ms, 25^2 ms^2))
+```
+
+That node then processes each message using:
+
+```text
+processing_delay_i ~ max(0, Normal(mu_i, 25^2 ms^2))
+```
+
+Therefore:
+
+- generated nodes receive different permanent means;
+- all nodes retain the same 25 ms runtime standard deviation;
+- the assignment is deterministic for the same `experiment.seed`;
+- `peerkit expand` exposes the assigned mean for every node.
+
+This special interpretation applies to `domain.node.processing_delay` when it is normal. Explicit node definitions and top-level `defaults.node` retain the ordinary behavior of using the same declared distribution wherever it is inherited.
+
+Other domain processing distributions (`constant`, `uniform`, `exponential`, and `pareto`) are copied without permanent per-node parameter sampling.
+
+## Topology generators
+
+### Erdős-Rényi
 
 ```yaml
 topology:
   model: er
-  p: 0.05
+  p: 0.06
   ensure_connected: true
 ```
 
-Every possible undirected edge is sampled independently with probability `p`. When `ensure_connected` is true, peerkit identifies connected components and adds exactly `component_count - 1` bridging edges. The resulting graph is therefore an augmented ER graph rather than a rejection-sampled connected ER graph.
+Every possible undirected edge is independently sampled with probability `p`. `ensure_connected` adds the minimum number of bridging edges between generated components.
 
-Accepted model aliases: `er`, `erdos-renyi`, `erdos_renyi`, `gnp`.
-
-#### Barabási–Albert
+### Barabási-Albert
 
 ```yaml
 topology:
@@ -171,11 +178,7 @@ topology:
   m: 3
 ```
 
-Generation starts from a clique of `m + 1` nodes. Every subsequent node attaches to `m` distinct existing nodes using degree-proportional selection.
-
-Accepted aliases: `ba`, `barabasi-albert`, `barabasi_albert`.
-
-#### Watts–Strogatz
+### Watts-Strogatz
 
 ```yaml
 topology:
@@ -184,96 +187,51 @@ topology:
   beta: 0.2
 ```
 
-`k` must be positive, even, and smaller than the node count. `beta` must be between 0 and 1.
-
-Accepted aliases: `ws`, `watts-strogatz`, `watts_strogatz`.
-
-#### Other deterministic forms
-
-```yaml
-topology:
-  model: ring
-```
-
-Supported models are `ring`, `path`, and `complete`.
-
-A grid requires dimensions whose product equals the node count:
+### Grid
 
 ```yaml
 topology:
   model: grid
-  rows: 10
-  columns: 10
+  rows: 13
+  columns: 13
 ```
 
-One dimension may be omitted when the node count is exactly divisible by the other.
+Other supported models are `ring`, `path`, and `complete`.
 
-### Inspecting the generated graph
+## Delay expressions
 
-```bash
-go run ./cmd/peerkit expand examples/er-domain.yaml
-```
-
-Write the fully resolved explicit scenario to a file:
-
-```bash
-go run ./cmd/peerkit expand -o resolved.yaml examples/er-domain.yaml
-```
-
-The expanded file contains every generated node, edge, and inherited performance setting. It can be edited and run as a normal explicit scenario.
-
-## Distribution expressions
-
-Delay distributions can use the original mapping form or a compact scalar expression.
-
-```yaml
-processing_delay: "normal(mean=100ms, stddev=20ms)"
-delay: "exponential(25ms)"
-```
-
-Supported expressions:
+Supported examples:
 
 ```text
 constant(100ms)
 fixed(100ms)
 uniform(10ms, 50ms)
-normal(100ms, 20ms)
 normal(mean=100ms, stddev=20ms)
 gaussian(mu=100ms, sigma=20ms)
-Normal(μ=100ms, σ=20ms)
-exponential(25ms)
-exp(mean=25ms)
-pareto(scale=20ms, shape=2.5)
+exponential(mean=25ms)
 pareto(xm=20ms, alpha=2.5)
-pareto(xm=20ms, α=2.5)
 ```
 
-Bare values such as `100`, `100ms`, and `1.5s` are interpreted as constant delays. Bare numbers use milliseconds.
+Bare values such as `100`, `100ms`, and `1.5s` are interpreted as constants. Unitless values use milliseconds.
 
-The original mapping remains valid:
-
-```yaml
-processing_delay:
-  distribution: normal
-  mean_ms: 100
-  stddev_ms: 20
-```
-
-Supported runtime distributions are:
-
-- `constant`: `value_ms`
-- `uniform`: `min_ms`, `max_ms`
-- `normal`: `mean_ms`, `stddev_ms`; negative samples are clamped to zero
-- `exponential`: `mean_ms`
-- `pareto`: `scale_ms`, `shape`
-
-The node processing distribution is sampled for each processed message. The edge delay distribution is sampled for each edge transmission. It does not sample one permanent processing speed per node or one permanent delay per edge.
-
-## Explicit scenario format
-
-### Topology by edge list
+## Explicit topology
 
 ```yaml
+version: 1
+protocol: base_flooding
+
+defaults:
+  node:
+    processing_delay: "normal(100ms, 20ms)"
+    workers: 2
+    queue_capacity: 1024
+    overflow_policy: drop_new
+  edge:
+    delay: "exponential(50ms)"
+    loss_rate: 0.01
+    bandwidth_mbps: 10
+    queue_capacity: 1024
+
 topology:
   directed: false
   nodes:
@@ -287,126 +245,9 @@ topology:
       target: n2
 ```
 
-### Topology by adjacency matrix
+An adjacency matrix may replace `edges`; matrix edges inherit `defaults.edge`.
 
-```yaml
-topology:
-  directed: false
-  nodes:
-    - id: n0
-    - id: n1
-    - id: n2
-  matrix:
-    - [0, 1, 0]
-    - [1, 0, 1]
-    - [0, 1, 0]
-```
-
-A matrix must be square, binary, symmetric, and have a zero diagonal. Matrix edges inherit `defaults.edge` because a matrix cannot carry per-edge attributes.
-
-### Node performance
-
-```yaml
-defaults:
-  node:
-    processing_delay: "normal(100ms, 20ms)"
-    workers: 2
-    queue_capacity: 1024
-    overflow_policy: drop_new
-```
-
-Node-level overrides are specified under a node:
-
-```yaml
-- id: n1
-  performance:
-    processing_delay: "constant(300ms)"
-    workers: 1
-    queue_capacity: 256
-    overflow_policy: drop_new
-  resources:
-    cpu_limit: 0.5
-    memory_limit_mb: 256
-```
-
-### Edge performance
-
-```yaml
-defaults:
-  edge:
-    delay: "exponential(50ms)"
-    loss_rate: 0.01
-    bandwidth_mbps: 10
-    queue_capacity: 1024
-```
-
-Per-edge overrides:
-
-```yaml
-- source: n1
-  target: n2
-  network:
-    delay: "constant(500ms)"
-    loss_rate: 0.02
-    bandwidth_mbps: 2
-    queue_capacity: 128
-```
-
-`bandwidth_mbps: 0` disables serialization-delay emulation. Bandwidth is modeled from `payload_size_bytes`; the dummy payload itself is not transmitted over libp2p in v0.3.0.
-
-### Traffic
-
-```yaml
-traffic:
-  - source: n0
-    start_at_ms: 0
-    count: 100
-    interval_ms: 100
-    payload_size_bytes: 1024
-```
-
-All emission times must fall within `experiment.duration_ms`. The experiment may still terminate while messages are in transit if the configured duration is too short.
-
-## Output
-
-Each run creates:
-
-```text
-.peerkit/runs/<run>/
-├── compose.yaml
-├── run.yaml
-├── scenario.yaml
-├── resolved-scenario.yaml
-├── config/
-│   └── <node>.yaml
-└── results/
-    ├── <node>.jsonl
-    ├── messages.csv
-    └── summary.json
-```
-
-`scenario.yaml` is the original input. `resolved-scenario.yaml` is the normalized explicit topology actually used by the run.
-
-Important raw event types:
-
-- `peer_started`
-- `connection_established`
-- `message_created`
-- `message_received`
-- `message_processed`
-- `message_sent`
-- `message_dropped`
-- `message_suppressed` (`duplicate_aware_flooding` only)
-
-`summary.json` reports the selected protocol, average reachability, average completion delay, transmissions, duplicates, drops, and suppressions.
-
-## Modeling boundary
-
-Edge delay, loss, and bandwidth are applied before writing a message to a persistent libp2p stream. They do not delay the TCP/libp2p handshake or background protocol traffic. This provides deterministic, edge-specific experiment control, but it is not a packet-level network emulator. A future `netem` backend can be added without changing the scenario model.
-
-### Random traffic sources
-
-Set `traffic.source` to the reserved value `random` to choose a source independently for every emitted message:
+## Random traffic sources
 
 ```yaml
 traffic:
@@ -417,5 +258,37 @@ traffic:
     payload_size_bytes: 1024
 ```
 
-Selection is uniform over all topology nodes and deterministic for the same `experiment.seed`, traffic entry index, and node ordering. Fixed node IDs such as `source: n000` continue to work unchanged. The resolved per-message schedule is written to `traffic-plan.csv` in the run directory. The value `random` is reserved in the `source` field.
+A source is sampled independently and uniformly for each message. The sequence is deterministic for the same seed and is written to `traffic-plan.csv`.
 
+## Output
+
+```text
+.peerkit/runs/<run>/
+├── compose.yaml
+├── run.yaml
+├── scenario.yaml
+├── resolved-scenario.yaml
+├── traffic-plan.csv
+├── config/
+└── results/
+    ├── <node>.jsonl
+    ├── messages.csv
+    └── summary.json
+```
+
+`messages.csv` includes:
+
+- `transmissions`: successful payload transmissions
+- `duplicates`: duplicate payload receptions
+- `drops`: payload drops
+- `suppressions`: payload transmissions skipped by DAF or IDONTWANT
+- `control_sent`
+- `control_received`
+- `control_drops`
+- `control_bytes_sent`
+
+Important raw events include `message_suppressed`, `control_sent`, `control_received`, and `control_dropped` in addition to the base message events.
+
+## Modeling boundary
+
+Payload and IDONTWANT delay, loss, and bandwidth are emulated before writing to persistent libp2p streams. TCP and libp2p connection establishment are not delayed. The configured payload size is used for serialization-delay modeling, but a dummy payload body is not physically transmitted.
