@@ -122,7 +122,7 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 		libp2p.DisableRelay(),
 		libp2p.DisableMetrics(),
 		libp2p.Ping(false),
-		libp2p.UserAgent("peerkit/0.1.0"),
+		libp2p.UserAgent("peerkit/0.2.1"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create libp2p host: %w", err)

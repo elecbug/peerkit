@@ -97,25 +97,53 @@ func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generat
 		return run, nil, ctx.Err()
 	}
 
+	trafficSources, trafficPlan := buildTrafficPlan(scenario)
+	if err := writeTrafficPlan(run.RunDir, trafficPlan); err != nil {
+		return run, nil, err
+	}
+
 	experimentStart := time.Now()
 	var scheduleWG sync.WaitGroup
-	errorChannel := make(chan error, len(scenario.Traffic))
-	for _, traffic := range scenario.Traffic {
+	errorChannel := make(chan error, len(trafficPlan))
+	for trafficIndex, traffic := range scenario.Traffic {
+		trafficIndex := trafficIndex
 		traffic := traffic
-		port := run.ControlPorts[traffic.Source]
+		sources := trafficSources[trafficIndex]
 		scheduleWG.Add(1)
 		go func() {
 			defer scheduleWG.Done()
-			startDelay := time.Until(experimentStart.Add(time.Duration(traffic.StartAtMS) * time.Millisecond))
-			if startDelay > 0 && !sleepContext(ctx, startDelay) {
+			if !config.IsRandomTrafficSource(traffic.Source) {
+				startDelay := time.Until(experimentStart.Add(time.Duration(traffic.StartAtMS) * time.Millisecond))
+				if startDelay > 0 && !sleepContext(ctx, startDelay) {
+					return
+				}
+				err := client.inject(ctx, run.ControlPorts[traffic.Source], peerkitp2p.InjectRequest{
+					Count: traffic.Count, IntervalMS: traffic.IntervalMS,
+					PayloadSizeBytes: traffic.PayloadSizeBytes,
+				})
+				if err != nil {
+					errorChannel <- fmt.Errorf("inject from %s: %w", traffic.Source, err)
+				}
 				return
 			}
-			err := client.inject(ctx, port, peerkitp2p.InjectRequest{
-				Count: traffic.Count, IntervalMS: traffic.IntervalMS,
-				PayloadSizeBytes: traffic.PayloadSizeBytes,
-			})
-			if err != nil {
-				errorChannel <- fmt.Errorf("inject from %s: %w", traffic.Source, err)
+
+			for messageIndex, source := range sources {
+				target := experimentStart.Add(time.Duration(
+					traffic.StartAtMS+int64(messageIndex)*traffic.IntervalMS,
+				) * time.Millisecond)
+				if delay := time.Until(target); delay > 0 && !sleepContext(ctx, delay) {
+					return
+				}
+				err := client.inject(ctx, run.ControlPorts[source], peerkitp2p.InjectRequest{
+					Count: 1, IntervalMS: 0, PayloadSizeBytes: traffic.PayloadSizeBytes,
+				})
+				if err != nil {
+					errorChannel <- fmt.Errorf(
+						"inject random traffic %d message %d from %s: %w",
+						trafficIndex, messageIndex, source, err,
+					)
+					return
+				}
 			}
 		}()
 	}

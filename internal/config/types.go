@@ -1,5 +1,7 @@
 package config
 
+const RandomTrafficSource = "random"
+
 type Scenario struct {
 	Version    int              `yaml:"version" json:"version"`
 	Experiment ExperimentConfig `yaml:"experiment" json:"experiment"`

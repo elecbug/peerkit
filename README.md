@@ -11,7 +11,7 @@ It creates one Docker container per peer, restricts libp2p connections to the co
 - Explicit edge-list or adjacency-matrix input
 - Generated topology domain input for large experiments
 - ER, BA, WS, ring, path, complete, and grid generators
-- Deterministic topology generation from `experiment.seed`
+- Deterministic topology and random traffic-source generation from `experiment.seed`
 - One libp2p host per container
 - Strict neighbor allow-list through `ConnectionGater`
 - Eager-push flooding with duplicate suppression
@@ -19,9 +19,10 @@ It creates one Docker container per peer, restricts libp2p connections to the co
 - Per-directed-edge transmission queue
 - Application-level propagation delay, loss, and bandwidth emulation
 - Docker CPU and memory limits
+- Fixed or uniformly random per-message propagation sources
 - Per-message result aggregation
 
-Dynamic topology, churn, GossipSub, Kademlia, mDNS, NAT traversal, and multi-host deployment are intentionally excluded from v0.2.
+Dynamic topology, churn, GossipSub, Kademlia, mDNS, NAT traversal, and multi-host deployment are intentionally excluded from v0.2.1.
 
 ## Requirements
 
@@ -111,7 +112,7 @@ domain:
     queue_capacity: 2048
 
 traffic:
-  - source: n000
+  - source: random
     start_at_ms: 0
     count: 100
     interval_ms: 50
@@ -324,7 +325,7 @@ Per-edge overrides:
     queue_capacity: 128
 ```
 
-`bandwidth_mbps: 0` disables serialization-delay emulation. Bandwidth is modeled from `payload_size_bytes`; the dummy payload itself is not transmitted over libp2p in v0.2.
+`bandwidth_mbps: 0` disables serialization-delay emulation. Bandwidth is modeled from `payload_size_bytes`; the dummy payload itself is not transmitted over libp2p in v0.2.1.
 
 ### Traffic
 
@@ -374,3 +375,19 @@ Important raw event types:
 ## Modeling boundary
 
 Edge delay, loss, and bandwidth are applied before writing a message to a persistent libp2p stream. They do not delay the TCP/libp2p handshake or background protocol traffic. This provides deterministic, edge-specific experiment control, but it is not a packet-level network emulator. A future `netem` backend can be added without changing the scenario model.
+
+### Random traffic sources
+
+Set `traffic.source` to the reserved value `random` to choose a source independently for every emitted message:
+
+```yaml
+traffic:
+  - source: random
+    start_at_ms: 0
+    count: 100
+    interval_ms: 50
+    payload_size_bytes: 1024
+```
+
+Selection is uniform over all topology nodes and deterministic for the same `experiment.seed`, traffic entry index, and node ordering. Fixed node IDs such as `source: n000` continue to work unchanged. The resolved per-message schedule is written to `traffic-plan.csv` in the run directory. The value `random` is reserved in the `source` field.
+

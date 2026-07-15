@@ -72,8 +72,10 @@ func (s *Scenario) Validate() error {
 	}
 
 	for i, traffic := range s.Traffic {
-		if _, ok := nodes[traffic.Source]; !ok {
-			return fmt.Errorf("traffic %d references unknown source %q", i, traffic.Source)
+		if !IsRandomTrafficSource(traffic.Source) {
+			if _, ok := nodes[traffic.Source]; !ok {
+				return fmt.Errorf("traffic %d references unknown source %q", i, traffic.Source)
+			}
 		}
 		if traffic.StartAtMS < 0 || traffic.IntervalMS < 0 {
 			return fmt.Errorf("traffic %d time values must be non-negative", i)
@@ -151,4 +153,10 @@ func undirectedEdgeKey(a, b string) string {
 		return a + "--" + b
 	}
 	return b + "--" + a
+}
+
+// IsRandomTrafficSource reports whether a traffic source requests uniform
+// per-message source selection across all topology nodes.
+func IsRandomTrafficSource(source string) bool {
+	return strings.EqualFold(strings.TrimSpace(source), RandomTrafficSource)
 }
