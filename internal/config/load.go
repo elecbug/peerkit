@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 
@@ -14,10 +15,18 @@ func LoadScenario(path string) (*Scenario, error) {
 	}
 
 	var scenario Scenario
-	if err := yaml.Unmarshal(data, &scenario); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&scenario); err != nil {
 		return nil, fmt.Errorf("decode scenario: %w", err)
 	}
 
+	// The first pass resolves experiment and top-level defaults needed by domain
+	// expansion. The second pass applies those defaults to generated nodes/edges.
+	scenario.ApplyDefaults()
+	if err := scenario.ExpandDomain(); err != nil {
+		return nil, err
+	}
 	if err := scenario.NormalizeTopology(); err != nil {
 		return nil, err
 	}

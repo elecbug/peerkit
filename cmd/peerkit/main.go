@@ -10,11 +10,13 @@ import (
 	"syscall"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/k-p2plab/peerkit/internal/config"
 	"github.com/k-p2plab/peerkit/internal/controller"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -28,6 +30,8 @@ func main() {
 		validateCommand(os.Args[2:])
 	case "run":
 		runCommand(os.Args[2:])
+	case "expand":
+		expandCommand(os.Args[2:])
 	case "down":
 		downCommand(os.Args[2:])
 	case "version":
@@ -52,6 +56,37 @@ func validateCommand(args []string) {
 	fmt.Printf("valid: %s (%d nodes, %d edges, %d traffic patterns)\n",
 		scenario.Experiment.Name, len(scenario.Topology.Nodes),
 		len(scenario.Topology.Edges), len(scenario.Traffic))
+}
+
+func expandCommand(args []string) {
+	flags := flag.NewFlagSet("expand", flag.ExitOnError)
+	output := flags.String("output", "", "write the resolved explicit scenario to this file; defaults to stdout")
+	flags.StringVar(output, "o", "", "alias for -output")
+	flags.Parse(args)
+	if flags.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: peerkit expand [-o resolved.yaml] <scenario.yaml>")
+		os.Exit(2)
+	}
+
+	scenario, err := config.LoadScenario(flags.Arg(0))
+	if err != nil {
+		log.Fatal(err)
+	}
+	resolved := *scenario
+	resolved.Domain = nil
+	data, err := yaml.Marshal(&resolved)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if *output == "" {
+		_, _ = os.Stdout.Write(data)
+		return
+	}
+	if err := os.WriteFile(*output, data, 0o644); err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("resolved scenario: %s (%d nodes, %d edges)\n", *output,
+		len(resolved.Topology.Nodes), len(resolved.Topology.Edges))
 }
 
 func runCommand(args []string) {
@@ -108,6 +143,7 @@ func usage() {
 
 Commands:
   validate <scenario.yaml>
+  expand [-o resolved.yaml] <scenario.yaml>
   run [options] <scenario.yaml>
   down <run-directory>
   version`)

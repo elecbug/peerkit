@@ -1,0 +1,43 @@
+version: 1
+
+experiment:
+  name: er-domain-demo
+  seed: 42
+  duration_ms: 12000
+  warmup_ms: 1000
+  control_base_port: 18080
+
+# Compact domain declaration. peerkit expands this into explicit nodes and edges
+# before Docker Compose/runtime configuration is generated.
+domain:
+  n: 100
+  id_prefix: n
+  zero_padding: 3
+
+  topology:
+    model: er
+    p: 0.06
+    ensure_connected: true
+
+  node:
+    processing_delay: "normal(mean=100ms, stddev=25ms)"
+    workers: 2
+    queue_capacity: 2048
+    overflow_policy: drop_new
+
+  edge:
+    delay: "exponential(mean=30ms)"
+    loss_rate: 0.005
+    bandwidth_mbps: 100
+    queue_capacity: 2048
+
+  resources:
+    cpu_limit: 0.25
+    memory_limit_mb: 128
+
+traffic:
+  - source: n000
+    start_at_ms: 0
+    count: 100
+    interval_ms: 50
+    payload_size_bytes: 1024

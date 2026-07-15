@@ -3,8 +3,9 @@ package config
 type Scenario struct {
 	Version    int              `yaml:"version" json:"version"`
 	Experiment ExperimentConfig `yaml:"experiment" json:"experiment"`
-	Defaults   DefaultsConfig   `yaml:"defaults" json:"defaults"`
-	Topology   TopologyConfig   `yaml:"topology" json:"topology"`
+	Defaults   DefaultsConfig   `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	Domain     *DomainConfig    `yaml:"domain,omitempty" json:"domain,omitempty"`
+	Topology   TopologyConfig   `yaml:"topology,omitempty" json:"topology,omitempty"`
 	Traffic    []TrafficConfig  `yaml:"traffic" json:"traffic"`
 }
 
@@ -19,6 +20,30 @@ type ExperimentConfig struct {
 type DefaultsConfig struct {
 	Node NodePerformance `yaml:"node" json:"node"`
 	Edge EdgeNetwork     `yaml:"edge" json:"edge"`
+}
+
+// DomainConfig defines a generated experiment domain. It is expanded into the
+// explicit TopologyConfig before validation and execution.
+type DomainConfig struct {
+	N           int                  `yaml:"n,omitempty" json:"n,omitempty"`
+	NodeCount   int                  `yaml:"node_count,omitempty" json:"node_count,omitempty"`
+	IDPrefix    string               `yaml:"id_prefix,omitempty" json:"id_prefix,omitempty"`
+	ZeroPadding int                  `yaml:"zero_padding,omitempty" json:"zero_padding,omitempty"`
+	Topology    DomainTopologyConfig `yaml:"topology" json:"topology"`
+	Node        *NodePerformance     `yaml:"node,omitempty" json:"node,omitempty"`
+	Edge        *EdgeNetwork         `yaml:"edge,omitempty" json:"edge,omitempty"`
+	Resources   *ResourceConfig      `yaml:"resources,omitempty" json:"resources,omitempty"`
+}
+
+type DomainTopologyConfig struct {
+	Model           string   `yaml:"model" json:"model"`
+	P               *float64 `yaml:"p,omitempty" json:"p,omitempty"`
+	M               int      `yaml:"m,omitempty" json:"m,omitempty"`
+	K               int      `yaml:"k,omitempty" json:"k,omitempty"`
+	Beta            *float64 `yaml:"beta,omitempty" json:"beta,omitempty"`
+	Rows            int      `yaml:"rows,omitempty" json:"rows,omitempty"`
+	Columns         int      `yaml:"columns,omitempty" json:"columns,omitempty"`
+	EnsureConnected bool     `yaml:"ensure_connected,omitempty" json:"ensure_connected,omitempty"`
 }
 
 type TopologyConfig struct {

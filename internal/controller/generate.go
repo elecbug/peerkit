@@ -159,6 +159,11 @@ func generateRuntime(scenarioPath string, scenario *config.Scenario, options Run
 	if data, err := os.ReadFile(scenarioPath); err == nil {
 		_ = os.WriteFile(filepath.Join(absoluteRunDir, "scenario.yaml"), data, 0o644)
 	}
+	resolvedScenario := *scenario
+	resolvedScenario.Domain = nil
+	if err := config.WriteYAML(filepath.Join(absoluteRunDir, "resolved-scenario.yaml"), &resolvedScenario); err != nil {
+		return nil, err
+	}
 
 	return &generatedRun{
 		RunDir: absoluteRunDir, ResultDir: resultDir, ComposeFile: composeFile,
