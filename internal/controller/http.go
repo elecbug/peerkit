@@ -8,13 +8,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	peerkitp2p "github.com/k-p2plab/peerkit/internal/p2p"
 )
+
+type controlEndpoints map[string]string
 
 type controlClient struct {
 	http        *http.Client
@@ -26,28 +31,40 @@ func newControlClient(parallelism int) *controlClient {
 		parallelism = 32
 	}
 	return &controlClient{
-		http:        &http.Client{Timeout: 5 * time.Second},
+		http: &http.Client{
+			Transport: &http.Transport{
+				MaxIdleConns:        parallelism * 2,
+				MaxIdleConnsPerHost: 4,
+				IdleConnTimeout:     30 * time.Second,
+			},
+			Timeout: 15 * time.Second,
+		},
 		parallelism: parallelism,
 	}
 }
 
-func (c *controlClient) waitReady(ctx context.Context, ports map[string]int) error {
+func endpointsFromPorts(ports map[string]int) controlEndpoints {
+	values := make(controlEndpoints, len(ports))
+	for node, port := range ports {
+		values[node] = fmt.Sprintf("http://127.0.0.1:%d", port)
+	}
+	return values
+}
+
+func (c *controlClient) waitReady(ctx context.Context, endpoints controlEndpoints) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
-	remaining := make(map[string]int, len(ports))
-	for node, port := range ports {
-		remaining[node] = port
-	}
+	remaining := cloneEndpoints(endpoints)
 	for len(remaining) > 0 {
 		ready := make(chan string, len(remaining))
-		_ = c.forEach(ctx, remaining, func(ctx context.Context, node string, port int) error {
-			request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint(port, "/healthz"), nil)
+		_ = c.forEach(ctx, remaining, func(ctx context.Context, node, baseURL string) error {
+			request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint(baseURL, "/healthz"), nil)
 			response, err := c.http.Do(request)
 			if err != nil {
 				return nil
 			}
-			io.Copy(io.Discard, response.Body)
-			response.Body.Close()
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
 			if response.StatusCode == http.StatusOK {
 				ready <- node
 			}
@@ -62,53 +79,49 @@ func (c *controlClient) waitReady(ctx context.Context, ports map[string]int) err
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("peers not ready: %v: %w", sortedKeys(remaining), ctx.Err())
+			return fmt.Errorf("peers not ready: %v: %w", sortedEndpointKeys(remaining), ctx.Err())
 		case <-ticker.C:
 		}
 	}
 	return nil
 }
 
-func (c *controlClient) connectAll(ctx context.Context, ports map[string]int) error {
-	return c.forEach(ctx, ports, func(ctx context.Context, node string, port int) error {
-		request, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint(port, "/v1/connect"), nil)
+func (c *controlClient) connectAll(ctx context.Context, endpoints controlEndpoints) error {
+	return c.postAll(ctx, endpoints, "/v1/connect", "connect")
+}
+
+func (c *controlClient) prepareAll(ctx context.Context, endpoints controlEndpoints) error {
+	return c.postAll(ctx, endpoints, "/v1/prepare", "prepare")
+}
+
+func (c *controlClient) finalizeAll(ctx context.Context, endpoints controlEndpoints) error {
+	return c.postAll(ctx, endpoints, "/v1/finalize", "finalize")
+}
+
+func (c *controlClient) postAll(ctx context.Context, endpoints controlEndpoints, path, operation string) error {
+	return c.forEach(ctx, endpoints, func(ctx context.Context, node, baseURL string) error {
+		request, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint(baseURL, path), nil)
 		response, err := c.http.Do(request)
 		if err != nil {
-			return fmt.Errorf("connect %s: %w", node, err)
+			return fmt.Errorf("%s %s: %w", operation, node, err)
 		}
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
-		response.Body.Close()
+		_ = response.Body.Close()
 		if response.StatusCode >= 300 {
-			return fmt.Errorf("connect %s returned %s: %s", node, response.Status, string(body))
+			return fmt.Errorf("%s %s returned %s: %s", operation, node, response.Status, string(body))
 		}
 		return nil
 	})
 }
 
-func (c *controlClient) prepareAll(ctx context.Context, ports map[string]int) error {
-	return c.forEach(ctx, ports, func(ctx context.Context, node string, port int) error {
-		request, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint(port, "/v1/prepare"), nil)
-		response, err := c.http.Do(request)
-		if err != nil {
-			return fmt.Errorf("prepare %s: %w", node, err)
-		}
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
-		response.Body.Close()
-		if response.StatusCode >= 300 {
-			return fmt.Errorf("prepare %s returned %s: %s", node, response.Status, string(body))
-		}
-		return nil
-	})
-}
-
-func (c *controlClient) waitTopology(ctx context.Context, ports map[string]int) error {
+func (c *controlClient) waitTopology(ctx context.Context, endpoints controlEndpoints) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		var mismatchMu sync.Mutex
 		mismatched := make([]string, 0)
-		_ = c.forEach(ctx, ports, func(ctx context.Context, node string, port int) error {
-			status, err := c.status(ctx, port)
+		_ = c.forEach(ctx, endpoints, func(ctx context.Context, node, baseURL string) error {
+			status, err := c.status(ctx, baseURL)
 			if err != nil {
 				mismatchMu.Lock()
 				mismatched = append(mismatched, node+": "+err.Error())
@@ -138,14 +151,14 @@ func (c *controlClient) waitTopology(ctx context.Context, ports map[string]int) 
 
 func (c *controlClient) forEach(
 	ctx context.Context,
-	ports map[string]int,
-	fn func(context.Context, string, int) error,
+	endpoints controlEndpoints,
+	fn func(context.Context, string, string) error,
 ) error {
 	sem := make(chan struct{}, c.parallelism)
-	errCh := make(chan error, len(ports))
+	errCh := make(chan error, len(endpoints))
 	var wg sync.WaitGroup
-	for node, port := range ports {
-		node, port := node, port
+	for node, baseURL := range endpoints {
+		node, baseURL := node, baseURL
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -156,7 +169,7 @@ func (c *controlClient) forEach(
 				return
 			}
 			defer func() { <-sem }()
-			if err := fn(ctx, node, port); err != nil {
+			if err := fn(ctx, node, baseURL); err != nil {
 				errCh <- err
 			}
 		}()
@@ -172,8 +185,8 @@ func (c *controlClient) forEach(
 	return errors.Join(errs...)
 }
 
-func (c *controlClient) status(ctx context.Context, port int) (peerkitp2p.StatusResponse, error) {
-	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint(port, "/v1/status"), nil)
+func (c *controlClient) status(ctx context.Context, baseURL string) (peerkitp2p.StatusResponse, error) {
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint(baseURL, "/v1/status"), nil)
 	response, err := c.http.Do(request)
 	if err != nil {
 		return peerkitp2p.StatusResponse{}, err
@@ -190,12 +203,12 @@ func (c *controlClient) status(ctx context.Context, port int) (peerkitp2p.Status
 	return status, nil
 }
 
-func (c *controlClient) inject(ctx context.Context, port int, requestBody peerkitp2p.InjectRequest) error {
+func (c *controlClient) inject(ctx context.Context, baseURL string, requestBody peerkitp2p.InjectRequest) error {
 	payload, err := json.Marshal(requestBody)
 	if err != nil {
 		return err
 	}
-	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint(port, "/v1/inject"), bytes.NewReader(payload))
+	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint(baseURL, "/v1/inject"), bytes.NewReader(payload))
 	request.Header.Set("Content-Type", "application/json")
 	response, err := c.http.Do(request)
 	if err != nil {
@@ -209,15 +222,53 @@ func (c *controlClient) inject(ctx context.Context, port int, requestBody peerki
 	return nil
 }
 
-func endpoint(port int, path string) string {
-	return fmt.Sprintf("http://127.0.0.1:%d%s", port, path)
+func (c *controlClient) downloadResults(ctx context.Context, endpoints controlEndpoints, resultDir string) error {
+	if err := os.MkdirAll(resultDir, 0o755); err != nil {
+		return err
+	}
+	downloadClient := &http.Client{Transport: c.http.Transport}
+	return c.forEach(ctx, endpoints, func(ctx context.Context, node, baseURL string) error {
+		request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint(baseURL, "/v1/results"), nil)
+		response, err := downloadClient.Do(request)
+		if err != nil {
+			return fmt.Errorf("download results from %s: %w", node, err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+			return fmt.Errorf("download results from %s returned %s: %s", node, response.Status, string(body))
+		}
+		path := filepath.Join(resultDir, node+".jsonl")
+		file, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(file, response.Body)
+		closeErr := file.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
 }
 
-func sortedKeys(values map[string]int) []string {
+func endpoint(baseURL, path string) string {
+	return strings.TrimRight(baseURL, "/") + path
+}
+
+func sortedEndpointKeys(values controlEndpoints) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func cloneEndpoints(values controlEndpoints) controlEndpoints {
+	result := make(controlEndpoints, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
 }

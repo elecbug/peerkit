@@ -18,16 +18,37 @@ func (s *Scenario) Validate() error {
 		return fmt.Errorf("unsupported scenario version %d", s.Version)
 	}
 	if s.Topology.Directed {
-		return fmt.Errorf("directed topology is not supported in peerkit v0.1")
+		return fmt.Errorf("directed topology is not supported in peerkit v0.6")
 	}
 	if len(s.Topology.Nodes) == 0 {
 		return fmt.Errorf("topology.nodes must not be empty")
 	}
-	if s.Experiment.ControlBasePort < 1024 || s.Experiment.ControlBasePort+len(s.Topology.Nodes) > 65535 {
-		return fmt.Errorf("control port range is invalid")
+	if s.Experiment.ControlBasePort < 1024 || s.Experiment.ControlBasePort > 65535 {
+		return fmt.Errorf("experiment.control_base_port must be between 1024 and 65535")
 	}
-	if s.Deployment.ComposeParallelism <= 0 {
-		return fmt.Errorf("deployment.compose_parallelism must be positive")
+	switch s.Deployment.Mode {
+	case "compose":
+		if s.Experiment.ControlBasePort+len(s.Topology.Nodes) > 65535 {
+			return fmt.Errorf("control port range is invalid for compose deployment")
+		}
+		if s.Deployment.ComposeParallelism <= 0 {
+			return fmt.Errorf("deployment.compose_parallelism must be positive")
+		}
+	case "swarm":
+		if s.Deployment.Swarm.StartupTimeoutSeconds <= 0 {
+			return fmt.Errorf("deployment.swarm.startup_timeout_seconds must be positive")
+		}
+		if s.Deployment.Swarm.StartupBatchSize <= 0 {
+			return fmt.Errorf("deployment.swarm.startup_batch_size must be positive")
+		}
+		if s.Deployment.Swarm.StartupBatchIntervalMS < 0 {
+			return fmt.Errorf("deployment.swarm.startup_batch_interval_ms must be non-negative")
+		}
+		if s.Deployment.Swarm.MaxReplicasPerNode < 0 {
+			return fmt.Errorf("deployment.swarm.max_replicas_per_node must be non-negative")
+		}
+	default:
+		return fmt.Errorf("unsupported deployment.mode %q; expected compose or swarm", s.Deployment.Mode)
 	}
 	if s.Controller.Parallelism <= 0 {
 		return fmt.Errorf("controller.parallelism must be positive")
@@ -94,6 +115,12 @@ func (s *Scenario) Validate() error {
 		}
 	}
 
+	if s.Deployment.IsSwarm() {
+		if err := validateUniformSwarmResources(s.Topology.Nodes); err != nil {
+			return err
+		}
+	}
+
 	for i, traffic := range s.Traffic {
 		if !IsRandomTrafficSource(traffic.Source) {
 			if _, ok := nodes[traffic.Source]; !ok {
@@ -125,7 +152,7 @@ func validateNodePerformance(p NodePerformance) error {
 		return fmt.Errorf("queue_capacity must be positive")
 	}
 	if p.OverflowPolicy != "drop_new" {
-		return fmt.Errorf("unsupported overflow_policy %q; peerkit v0.1 supports drop_new", p.OverflowPolicy)
+		return fmt.Errorf("unsupported overflow_policy %q; peerkit v0.6 supports drop_new", p.OverflowPolicy)
 	}
 	return validateDistribution(p.ProcessingDelay)
 }
@@ -182,4 +209,25 @@ func undirectedEdgeKey(a, b string) string {
 // per-message source selection across all topology nodes.
 func IsRandomTrafficSource(source string) bool {
 	return strings.EqualFold(strings.TrimSpace(source), RandomTrafficSource)
+}
+
+func validateUniformSwarmResources(nodes []NodeSpec) error {
+	if len(nodes) < 2 {
+		return nil
+	}
+	base := resolvedResource(nodes[0].Resources)
+	for _, node := range nodes[1:] {
+		current := resolvedResource(node.Resources)
+		if current != base {
+			return fmt.Errorf("swarm replicated deployment requires identical Docker resource limits for all peers; node %q differs", node.ID)
+		}
+	}
+	return nil
+}
+
+func resolvedResource(value *ResourceConfig) ResourceConfig {
+	if value == nil {
+		return ResourceConfig{}
+	}
+	return *value
 }

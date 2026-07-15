@@ -12,6 +12,7 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
+	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -53,6 +54,9 @@ type Peer struct {
 	processQueue chan processItem
 	sequence     atomic.Uint64
 	httpServer   *http.Server
+	finalized    atomic.Bool
+	finalizeOnce sync.Once
+	finalizeErr  error
 }
 
 type processItem struct {
@@ -132,7 +136,7 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 		libp2p.DisableRelay(),
 		libp2p.DisableMetrics(),
 		libp2p.Ping(false),
-		libp2p.UserAgent("peerkit/0.5.0"),
+		libp2p.UserAgent("peerkit/0.6.0"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create libp2p host: %w", err)
@@ -187,6 +191,8 @@ func (p *Peer) StartHTTP() error {
 	mux.HandleFunc("POST /v1/connect", p.handleConnect)
 	mux.HandleFunc("POST /v1/prepare", p.handlePrepare)
 	mux.HandleFunc("POST /v1/inject", p.handleInject)
+	mux.HandleFunc("POST /v1/finalize", p.handleFinalize)
+	mux.HandleFunc("GET /v1/results", p.handleResults)
 	p.httpServer = &http.Server{
 		Addr:              p.cfg.ControlAddress,
 		Handler:           mux,
@@ -220,7 +226,7 @@ func (p *Peer) Close() error {
 		errs = append(errs, p.host.Close())
 	}
 	if p.writer != nil {
-		errs = append(errs, p.writer.Close())
+		errs = append(errs, p.Finalize())
 	}
 	return errors.Join(errs...)
 }
@@ -689,6 +695,40 @@ func (p *Peer) handlePrepare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "prepared"})
 }
 
+func (p *Peer) Finalize() error {
+	p.finalizeOnce.Do(func() {
+		p.finalized.Store(true)
+		if p.writer != nil {
+			p.finalizeErr = p.writer.Close()
+		}
+	})
+	return p.finalizeErr
+}
+
+func (p *Peer) handleFinalize(w http.ResponseWriter, _ *http.Request) {
+	if err := p.Finalize(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "finalized"})
+}
+
+func (p *Peer) handleResults(w http.ResponseWriter, _ *http.Request) {
+	if !p.finalized.Load() {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "results are not finalized"})
+		return
+	}
+	file, err := os.Open(p.cfg.ResultFile)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer file.Close()
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", p.cfg.NodeID+".jsonl"))
+	_, _ = io.Copy(w, file)
+}
+
 func (p *Peer) handleInject(w http.ResponseWriter, r *http.Request) {
 	var request InjectRequest
 	decoder := json.NewDecoder(io.LimitReader(r.Body, 64*1024))
@@ -705,6 +745,9 @@ func (p *Peer) handleInject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Peer) record(event metrics.Event) {
+	if p.finalized.Load() {
+		return
+	}
 	event.TimestampNS = time.Now().UnixNano()
 	event.RunID = p.cfg.RunID
 	event.Experiment = p.cfg.ExperimentName

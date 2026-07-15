@@ -18,12 +18,17 @@ import (
 )
 
 type generatedRun struct {
-	RunDir       string
-	ResultDir    string
-	ComposeFile  string
-	ProjectName  string
-	ControlPorts map[string]int
-	MetadataFile string
+	RunID            string
+	Mode             string
+	RunDir           string
+	ResultDir        string
+	ComposeFile      string
+	StackFile        string
+	ProjectName      string
+	ControlPorts     map[string]int
+	ControlEndpoints controlEndpoints
+	ControllerURL    string
+	MetadataFile     string
 }
 
 type identityRecord struct {
@@ -35,7 +40,7 @@ type identityRecord struct {
 
 var projectNameSanitizer = regexp.MustCompile(`[^a-z0-9_-]+`)
 
-func generateRuntime(scenarioPath string, scenario *config.Scenario, options RunOptions) (*generatedRun, error) {
+func generateComposeRuntime(scenarioPath string, scenario *config.Scenario, options RunOptions) (*generatedRun, error) {
 	now := time.Now().UTC()
 	runID := now.Format("20060102T150405.000000000Z")
 	namePart := sanitizeProjectName(scenario.Experiment.Name)
@@ -151,7 +156,7 @@ func generateRuntime(scenarioPath string, scenario *config.Scenario, options Run
 
 	absoluteScenario, _ := filepath.Abs(scenarioPath)
 	metadata := RunMetadata{
-		RunID: runID, ProjectName: projectName, ComposeFile: composeFile,
+		RunID: runID, DeploymentMode: "compose", ProjectName: projectName, ComposeFile: composeFile,
 		ScenarioFile: absoluteScenario, ControlPorts: controlPorts,
 	}
 	metadataFile := filepath.Join(absoluteRunDir, "run.yaml")
@@ -168,8 +173,9 @@ func generateRuntime(scenarioPath string, scenario *config.Scenario, options Run
 	}
 
 	return &generatedRun{
-		RunDir: absoluteRunDir, ResultDir: resultDir, ComposeFile: composeFile,
-		ProjectName: projectName, ControlPorts: controlPorts, MetadataFile: metadataFile,
+		RunID: runID, Mode: "compose", RunDir: absoluteRunDir, ResultDir: resultDir,
+		ComposeFile: composeFile, ProjectName: projectName, ControlPorts: controlPorts,
+		ControlEndpoints: endpointsFromPorts(controlPorts), MetadataFile: metadataFile,
 	}, nil
 }
 

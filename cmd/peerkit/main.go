@@ -16,7 +16,7 @@ import (
 	"github.com/k-p2plab/peerkit/internal/controller"
 )
 
-const version = "0.5.0"
+const version = "0.6.0"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)

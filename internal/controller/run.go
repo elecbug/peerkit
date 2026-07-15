@@ -6,12 +6,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/k-p2plab/peerkit/internal/config"
 	"github.com/k-p2plab/peerkit/internal/metrics"
-	peerkitp2p "github.com/k-p2plab/peerkit/internal/p2p"
 )
 
 func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generatedRun, *metrics.RunSummary, error) {
@@ -33,7 +31,7 @@ func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generat
 		options.Image = "peerkit-peer:dev"
 	}
 	if options.ReadyTimeoutSeconds <= 0 {
-		options.ReadyTimeoutSeconds = 60
+		options.ReadyTimeoutSeconds = 180
 	}
 
 	run, err := generateRuntime(scenarioPath, scenario, options)
@@ -42,14 +40,31 @@ func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generat
 	}
 	log.Printf("run directory: %s", run.RunDir)
 
+	if scenario.Deployment.IsSwarm() {
+		summary, err := runSwarm(ctx, scenario, run, options)
+		return run, summary, err
+	}
+	summary, err := runCompose(ctx, scenario, run, options)
+	return run, summary, err
+}
+
+func runCompose(
+	ctx context.Context,
+	scenario *config.Scenario,
+	run *generatedRun,
+	options RunOptions,
+) (*metrics.RunSummary, error) {
+	if !scenario.Deployment.Swarm.PushImageEnabled() && !options.NoBuild {
+		log.Printf("warning: push_image=false builds %s only on the manager; preload the same image on every eligible Swarm node", options.Image)
+	}
 	if !options.NoBuild {
 		log.Printf("building %s", options.Image)
 		if err := buildPeerImage(ctx, options.ProjectRoot, options.Image); err != nil {
-			return run, nil, err
+			return nil, err
 		}
 	}
 	if err := composeUp(ctx, run, scenario.Deployment.ComposeParallelism); err != nil {
-		return run, nil, err
+		return nil, err
 	}
 	if !options.Keep {
 		defer func() {
@@ -61,117 +76,93 @@ func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generat
 		}()
 	}
 
-	client := newControlClient(scenario.Controller.Parallelism)
-	readyCtx, cancelReady := context.WithTimeout(ctx, time.Duration(options.ReadyTimeoutSeconds)*time.Second)
-	if err := client.waitReady(readyCtx, run.ControlPorts); err != nil {
-		cancelReady()
-		return run, nil, err
+	log.Printf("waiting for %d compose peers", len(scenario.Topology.Nodes))
+	summary, err := executeExperiment(
+		ctx,
+		scenario,
+		run.ControlEndpoints,
+		run.RunDir,
+		run.ResultDir,
+		experimentExecutionOptions{
+			ReadyTimeout: time.Duration(options.ReadyTimeoutSeconds) * time.Second,
+			Download:     false,
+		},
+	)
+	if err != nil {
+		return nil, err
 	}
-	cancelReady()
-	log.Printf("all peers are ready")
-
-	operationTimeout := time.Duration(scenario.Controller.OperationTimeoutSeconds) * time.Second
-	connectCtx, cancelConnect := context.WithTimeout(ctx, operationTimeout)
-	if err := client.connectAll(connectCtx, run.ControlPorts); err != nil {
-		cancelConnect()
-		return run, nil, err
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := composeStop(stopCtx, run); err != nil {
+		cancelStop()
+		return nil, err
 	}
-	cancelConnect()
+	cancelStop()
+	return summary, nil
+}
 
-	topologyCtx, cancelTopology := context.WithTimeout(ctx, operationTimeout)
-	if err := client.waitTopology(topologyCtx, run.ControlPorts); err != nil {
-		cancelTopology()
-		return run, nil, err
+func runSwarm(
+	ctx context.Context,
+	scenario *config.Scenario,
+	run *generatedRun,
+	options RunOptions,
+) (*metrics.RunSummary, error) {
+	if err := ensureSwarmManager(ctx); err != nil {
+		return nil, err
 	}
-	cancelTopology()
-	log.Printf("topology converged with %d nodes and %d edges", len(scenario.Topology.Nodes), len(scenario.Topology.Edges))
-
-	prepareCtx, cancelPrepare := context.WithTimeout(ctx, operationTimeout)
-	if err := client.prepareAll(prepareCtx, run.ControlPorts); err != nil {
-		cancelPrepare()
-		return run, nil, err
+	if scenario.Deployment.Swarm.PushImageEnabled() && !isPushableImageReference(options.Image) {
+		return nil, fmt.Errorf("swarm image %q is not registry-qualified; use --image <registry>/<repository>:<tag> or set deployment.swarm.push_image=false after preloading the image on every node", options.Image)
 	}
-	cancelPrepare()
-	log.Printf("persistent propagation streams prepared")
-
-	if !sleepContext(ctx, time.Duration(scenario.Experiment.WarmupMS)*time.Millisecond) {
-		return run, nil, ctx.Err()
+	if !scenario.Deployment.Swarm.PushImageEnabled() && !options.NoBuild {
+		log.Printf("warning: push_image=false builds %s only on the manager; preload the same image on every eligible Swarm node", options.Image)
 	}
-
-	trafficSources, trafficPlan := buildTrafficPlan(scenario)
-	if err := writeTrafficPlan(run.RunDir, trafficPlan); err != nil {
-		return run, nil, err
-	}
-
-	experimentStart := time.Now()
-	var scheduleWG sync.WaitGroup
-	errorChannel := make(chan error, len(trafficPlan))
-	for trafficIndex, traffic := range scenario.Traffic {
-		trafficIndex := trafficIndex
-		traffic := traffic
-		sources := trafficSources[trafficIndex]
-		scheduleWG.Add(1)
-		go func() {
-			defer scheduleWG.Done()
-			if !config.IsRandomTrafficSource(traffic.Source) {
-				startDelay := time.Until(experimentStart.Add(time.Duration(traffic.StartAtMS) * time.Millisecond))
-				if startDelay > 0 && !sleepContext(ctx, startDelay) {
-					return
-				}
-				err := client.inject(ctx, run.ControlPorts[traffic.Source], peerkitp2p.InjectRequest{
-					Count: traffic.Count, IntervalMS: traffic.IntervalMS,
-					PayloadSizeBytes: traffic.PayloadSizeBytes,
-				})
-				if err != nil {
-					errorChannel <- fmt.Errorf("inject from %s: %w", traffic.Source, err)
-				}
-				return
+	if !options.NoBuild {
+		log.Printf("building %s", options.Image)
+		if err := buildPeerImage(ctx, options.ProjectRoot, options.Image); err != nil {
+			return nil, err
+		}
+		if scenario.Deployment.Swarm.PushImageEnabled() {
+			log.Printf("pushing %s for Swarm workers", options.Image)
+			if err := pushPeerImage(ctx, options.ProjectRoot, options.Image); err != nil {
+				return nil, fmt.Errorf("push swarm image: %w", err)
 			}
+		}
+	}
 
-			for messageIndex, source := range sources {
-				target := experimentStart.Add(time.Duration(
-					traffic.StartAtMS+int64(messageIndex)*traffic.IntervalMS,
-				) * time.Millisecond)
-				if delay := time.Until(target); delay > 0 && !sleepContext(ctx, delay) {
-					return
-				}
-				err := client.inject(ctx, run.ControlPorts[source], peerkitp2p.InjectRequest{
-					Count: 1, IntervalMS: 0, PayloadSizeBytes: traffic.PayloadSizeBytes,
-				})
-				if err != nil {
-					errorChannel <- fmt.Errorf(
-						"inject random traffic %d message %d from %s: %w",
-						trafficIndex, messageIndex, source, err,
-					)
-					return
-				}
+	log.Printf("deploying Swarm stack %s with %d peer tasks", run.ProjectName, len(scenario.Topology.Nodes))
+	if err := stackDeploy(ctx, run, scenario.Deployment.Swarm, len(scenario.Topology.Nodes)); err != nil {
+		return nil, err
+	}
+	if !options.Keep {
+		defer func() {
+			downCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := stackRemove(downCtx, run.ProjectName, run.RunDir); err != nil {
+				log.Printf("stack remove: %v", err)
 			}
 		}()
 	}
 
-	if !sleepContext(ctx, time.Duration(scenario.Experiment.DurationMS)*time.Millisecond) {
-		return run, nil, ctx.Err()
-	}
-	scheduleWG.Wait()
-	close(errorChannel)
-	for scheduleErr := range errorChannel {
-		if scheduleErr != nil {
-			return run, nil, scheduleErr
-		}
-	}
-	// Stop peers before aggregation so event files are closed and no longer changing.
-	stopCtx, cancelStop := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := composeStop(stopCtx, run); err != nil {
-		cancelStop()
-		return run, nil, err
-	}
-	cancelStop()
-
-	summary, err := metrics.Aggregate(run.ResultDir, len(scenario.Topology.Nodes))
+	totalTimeout := time.Duration(scenario.Deployment.Swarm.StartupTimeoutSeconds)*time.Second +
+		time.Duration(scenario.Controller.OperationTimeoutSeconds*4)*time.Second +
+		time.Duration(scenario.Experiment.WarmupMS+scenario.Experiment.DurationMS)*time.Millisecond +
+		5*time.Minute
+	waitCtx, cancelWait := context.WithTimeout(ctx, totalTimeout)
+	status, err := waitSwarmRun(waitCtx, run.ControllerURL)
+	cancelWait()
 	if err != nil {
-		return run, nil, err
+		return nil, err
 	}
-	return run, summary, nil
+	if status.Summary == nil {
+		return nil, fmt.Errorf("swarm controller completed without a summary")
+	}
+
+	downloadCtx, cancelDownload := context.WithTimeout(ctx, 10*time.Minute)
+	if err := downloadSwarmArchive(downloadCtx, run.ControllerURL, run.ResultDir); err != nil {
+		cancelDownload()
+		return nil, err
+	}
+	cancelDownload()
+	return status.Summary, nil
 }
 
 func Down(ctx context.Context, runDir string) error {
@@ -183,6 +174,9 @@ func Down(ctx context.Context, runDir string) error {
 	var metadata RunMetadata
 	if err := yamlUnmarshal(data, &metadata); err != nil {
 		return err
+	}
+	if metadata.DeploymentMode == "swarm" || metadata.StackFile != "" {
+		return stackRemove(ctx, metadata.ProjectName, runDir)
 	}
 	return composeDown(ctx, metadata.ProjectName, metadata.ComposeFile, runDir)
 }
@@ -199,4 +193,13 @@ func sleepContext(ctx context.Context, duration time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+func isPushableImageReference(image string) bool {
+	for index, r := range image {
+		if r == '/' && index > 0 {
+			return true
+		}
+	}
+	return false
 }

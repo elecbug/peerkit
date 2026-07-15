@@ -1,16 +1,17 @@
 # peerkit
 
-`peerkit` is a static-topology P2P propagation experiment tool built on go-libp2p and Docker Compose.
+`peerkit` is a static-topology P2P propagation experiment tool built on go-libp2p, Docker Compose, and Docker Swarm.
 
-It creates one container per peer, restricts libp2p connections to the configured graph, applies node and edge performance models, injects traffic, and produces JSONL/CSV experiment results.
+It preserves one logical peer per container, restricts libp2p connections to the configured graph, applies node and edge performance models, injects traffic, and produces JSONL/CSV experiment results. The same scenario and CLI are used for single-host Compose runs and multi-host Swarm runs.
 
 ## Current scope
 
-- Single Docker host
 - Static, undirected topology
+- One logical peer per Docker container
+- Single-host Docker Compose deployment
+- Multi-host Docker Swarm deployment
 - Explicit edge-list or adjacency-matrix input
 - Generated ER, BA, WS, ring, path, complete, and grid domains
-- Deterministic generation from `experiment.seed`
 - Fixed or random per-message traffic sources
 - Three flooding protocols
 - Node processing delay, workers, and queues
@@ -24,8 +25,11 @@ It creates one container per peer, restricts libp2p connections to the configure
 ## Requirements
 
 - Go 1.23 or later
-- Docker Engine or Docker Desktop
-- Docker Compose v2
+- Docker Engine
+- Docker Compose v2 for `deployment.mode: compose`
+- A Docker Swarm manager for `deployment.mode: swarm`
+- A registry reachable from every Swarm node, unless the image is preloaded on every node
+- Synchronized host clocks, such as chrony or systemd-timesyncd, for cross-host delay measurements
 
 ## Quick start
 
@@ -41,6 +45,110 @@ Use an existing image:
 docker build -t peerkit-peer:dev -f deploy/Dockerfile .
 go run ./cmd/peerkit run --no-build examples/er-domain.yaml
 ```
+
+## Docker Swarm deployment
+
+The user-level command remains unchanged. Set `deployment.mode: swarm` and run the scenario from a Swarm manager:
+
+```yaml
+deployment:
+  mode: swarm
+  swarm:
+    push_image: true
+    with_registry_auth: true
+    startup_timeout_seconds: 600
+    startup_batch_size: 25
+    startup_batch_interval_ms: 1000
+    placement_constraints:
+      - node.labels.peerkit == true
+    max_replicas_per_node: 200
+```
+
+```bash
+go run ./cmd/peerkit run \
+  --image registry.example.com/peerkit/peerkit:0.6.0 \
+  examples/swarm-domain.yaml
+```
+
+The CLI performs the following operations automatically:
+
+```text
+load and expand scenario
+→ build peerkit image
+→ push image to the registry
+→ generate stack.yaml
+→ docker stack deploy with zero peer replicas
+→ scale peer tasks in bounded startup batches
+→ wait for peer task registration
+→ distribute per-peer runtime configurations
+→ form and verify the libp2p topology
+→ run traffic
+→ collect peer JSONL files through the Controller
+→ download the result archive
+→ docker stack rm
+```
+
+The generated stack has two services:
+
+```text
+controller   replicas: 1
+peers         replicas: 0 → N in startup batches
+```
+
+Each `peers` task is one container and one logical peer. The task uses `{{.Task.Slot}}` only to select its corresponding topology node. It generates a fresh libp2p identity when it starts, registers its Peer ID and overlay address with the Controller, and downloads its resolved neighbor configuration after all tasks have registered.
+
+The resolved scenario is gzip-compressed and split into Docker Config parts below the per-config size limit before deployment. The Controller reconstructs it at startup, so generated or explicit topologies larger than a single Docker Config can still be deployed.
+
+Only the Controller API port is published. Peer control APIs and libp2p transport addresses remain inside the overlay network.
+
+### Swarm image distribution
+
+By default, `push_image: true` builds and pushes the image before stack deployment. The image passed with `--image` must therefore be registry-qualified:
+
+```text
+registry.example.com/peerkit/peerkit:0.6.0
+registry.local:5000/peerkit/peerkit:0.6.0
+username/peerkit:0.6.0
+```
+
+For a private registry, log in on the manager before execution. `with_registry_auth: true` forwards the manager's registry credentials to Swarm workers.
+
+When the exact image is already available on every node:
+
+```yaml
+deployment:
+  mode: swarm
+  swarm:
+    push_image: false
+```
+
+```bash
+go run ./cmd/peerkit run --no-build --image peerkit-peer:dev examples/swarm-domain.yaml
+```
+
+### Swarm placement
+
+Label eligible nodes:
+
+```bash
+docker node update --label-add peerkit=true worker-01
+docker node update --label-add peerkit=true worker-02
+docker node update --label-add peerkit=true worker-03
+```
+
+`placement_constraints` are applied to both the Controller and peer service. `max_replicas_per_node` is applied to the replicated peer service after stack deployment.
+
+Peer tasks start in bounded batches rather than all at once. `startup_batch_size` controls the number of new replicas per scale step, and `startup_batch_interval_ms` inserts a pause after each completed step. This reduces simultaneous cgroup, network-namespace, and overlay endpoint creation on each host.
+
+All peer containers in one replicated service must use identical Docker CPU and memory limits. Logical node processing distributions may still differ per peer. Heterogeneous cgroup limits require separate resource-class services and are rejected by the current Swarm generator.
+
+### Swarm result collection
+
+Worker-local bind mounts are not used. Each peer records to its container filesystem, finalizes the JSONL stream, and exposes it to the Controller over the overlay network. The Controller aggregates all peers and serves a compressed result archive to the CLI.
+
+Peer identities are intentionally ephemeral. If a task is recreated, its Peer ID changes. The generated peer service uses `restart_policy.condition: none`, so a task failure causes the current experiment to fail instead of silently replacing a peer midway through the run.
+
+Physical inter-host latency is added to the configured application-level edge delay. Cross-host completion timestamps also assume synchronized host clocks.
 
 ## Protocol selection
 
@@ -295,7 +403,7 @@ domain:
     queue_capacity: 64
 ```
 
-The one-container-per-peer model and one published control port per peer still remain. For substantially larger single-host experiments, the next architectural step is multi-peer container sharding.
+The one-container-per-peer model is retained. For larger experiments, use `deployment.mode: swarm` to distribute those containers across multiple hosts rather than placing multiple logical peers in one container.
 
 ## Delay expressions
 
@@ -361,6 +469,8 @@ A source is sampled independently and uniformly for each message. The sequence i
 
 ## Output
 
+Compose run:
+
 ```text
 .peerkit/runs/<run>/
 ├── compose.yaml
@@ -370,6 +480,23 @@ A source is sampled independently and uniformly for each message. The sequence i
 ├── traffic-plan.csv
 ├── config/
 └── results/
+    ├── <node>.jsonl
+    ├── messages.csv
+    └── summary.json
+```
+
+Swarm run:
+
+```text
+.peerkit/runs/<run>/
+├── stack.yaml
+├── run.yaml
+├── scenario.yaml
+├── resolved-scenario.yaml
+└── results/
+    ├── scenario.yaml
+    ├── resolved-scenario.yaml
+    ├── traffic-plan.csv
     ├── <node>.jsonl
     ├── messages.csv
     └── summary.json

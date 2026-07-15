@@ -24,7 +24,31 @@ type ExperimentConfig struct {
 }
 
 type DeploymentConfig struct {
-	ComposeParallelism int `yaml:"compose_parallelism,omitempty" json:"compose_parallelism,omitempty"`
+	Mode               string      `yaml:"mode,omitempty" json:"mode,omitempty"`
+	ComposeParallelism int         `yaml:"compose_parallelism,omitempty" json:"compose_parallelism,omitempty"`
+	Swarm              SwarmConfig `yaml:"swarm,omitempty" json:"swarm,omitempty"`
+}
+
+type SwarmConfig struct {
+	PushImage              *bool    `yaml:"push_image,omitempty" json:"push_image,omitempty"`
+	WithRegistryAuth       *bool    `yaml:"with_registry_auth,omitempty" json:"with_registry_auth,omitempty"`
+	StartupTimeoutSeconds  int      `yaml:"startup_timeout_seconds,omitempty" json:"startup_timeout_seconds,omitempty"`
+	StartupBatchSize       int      `yaml:"startup_batch_size,omitempty" json:"startup_batch_size,omitempty"`
+	StartupBatchIntervalMS int      `yaml:"startup_batch_interval_ms,omitempty" json:"startup_batch_interval_ms,omitempty"`
+	PlacementConstraints   []string `yaml:"placement_constraints,omitempty" json:"placement_constraints,omitempty"`
+	MaxReplicasPerNode     int      `yaml:"max_replicas_per_node,omitempty" json:"max_replicas_per_node,omitempty"`
+}
+
+func (d DeploymentConfig) IsSwarm() bool {
+	return d.Mode == "swarm"
+}
+
+func (s SwarmConfig) PushImageEnabled() bool {
+	return s.PushImage != nil && *s.PushImage
+}
+
+func (s SwarmConfig) WithRegistryAuthEnabled() bool {
+	return s.WithRegistryAuth != nil && *s.WithRegistryAuth
 }
 
 type ControllerConfig struct {

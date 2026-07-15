@@ -41,11 +41,29 @@ func (s *Scenario) ApplyDefaults() {
 	if s.Metrics.FlushIntervalMS == 0 {
 		s.Metrics.FlushIntervalMS = 200
 	}
+	if s.Deployment.Mode == "" {
+		s.Deployment.Mode = "compose"
+	}
+	s.Deployment.Mode = strings.ToLower(strings.TrimSpace(s.Deployment.Mode))
 	if s.Deployment.ComposeParallelism == 0 {
 		s.Deployment.ComposeParallelism = 4
 	}
-	if s.Controller.Parallelism == 0 {
-		s.Controller.Parallelism = 32
+	if s.Deployment.Swarm.PushImage == nil {
+		v := true
+		s.Deployment.Swarm.PushImage = &v
+	}
+	if s.Deployment.Swarm.WithRegistryAuth == nil {
+		v := true
+		s.Deployment.Swarm.WithRegistryAuth = &v
+	}
+	if s.Deployment.Swarm.StartupTimeoutSeconds == 0 {
+		s.Deployment.Swarm.StartupTimeoutSeconds = 600
+	}
+	if s.Deployment.Swarm.StartupBatchSize == 0 {
+		s.Deployment.Swarm.StartupBatchSize = 25
+	}
+	if s.Deployment.Swarm.StartupBatchIntervalMS == 0 {
+		s.Deployment.Swarm.StartupBatchIntervalMS = 1000
 	}
 
 	applyNodeDefaults(&s.Defaults.Node)
