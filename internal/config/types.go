@@ -6,6 +6,8 @@ type Scenario struct {
 	Version    int              `yaml:"version" json:"version"`
 	Protocol   string           `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 	Experiment ExperimentConfig `yaml:"experiment" json:"experiment"`
+	Controller ControllerConfig `yaml:"controller,omitempty" json:"controller,omitempty"`
+	Metrics    MetricsConfig    `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	Defaults   DefaultsConfig   `yaml:"defaults,omitempty" json:"defaults,omitempty"`
 	Domain     *DomainConfig    `yaml:"domain,omitempty" json:"domain,omitempty"`
 	Topology   TopologyConfig   `yaml:"topology,omitempty" json:"topology,omitempty"`
@@ -18,6 +20,17 @@ type ExperimentConfig struct {
 	DurationMS      int64  `yaml:"duration_ms" json:"duration_ms"`
 	WarmupMS        int64  `yaml:"warmup_ms" json:"warmup_ms"`
 	ControlBasePort int    `yaml:"control_base_port" json:"control_base_port"`
+}
+
+type ControllerConfig struct {
+	Parallelism             int `yaml:"parallelism,omitempty" json:"parallelism,omitempty"`
+	OperationTimeoutSeconds int `yaml:"operation_timeout_seconds,omitempty" json:"operation_timeout_seconds,omitempty"`
+}
+
+type MetricsConfig struct {
+	BufferBytes     int   `yaml:"buffer_bytes,omitempty" json:"buffer_bytes,omitempty"`
+	QueueCapacity   int   `yaml:"queue_capacity,omitempty" json:"queue_capacity,omitempty"`
+	FlushIntervalMS int64 `yaml:"flush_interval_ms,omitempty" json:"flush_interval_ms,omitempty"`
 }
 
 type DefaultsConfig struct {
@@ -41,6 +54,7 @@ type DomainConfig struct {
 type DomainTopologyConfig struct {
 	Model           string   `yaml:"model" json:"model"`
 	P               *float64 `yaml:"p,omitempty" json:"p,omitempty"`
+	AverageDegree   *float64 `yaml:"average_degree,omitempty" json:"average_degree,omitempty"`
 	M               int      `yaml:"m,omitempty" json:"m,omitempty"`
 	K               int      `yaml:"k,omitempty" json:"k,omitempty"`
 	Beta            *float64 `yaml:"beta,omitempty" json:"beta,omitempty"`
@@ -124,6 +138,7 @@ type RuntimeNodeConfig struct {
 	ListenAddress  string                  `yaml:"listen_address" json:"listen_address"`
 	ControlAddress string                  `yaml:"control_address" json:"control_address"`
 	ResultFile     string                  `yaml:"result_file" json:"result_file"`
+	Metrics        MetricsConfig           `yaml:"metrics" json:"metrics"`
 	Performance    NodePerformance         `yaml:"performance" json:"performance"`
 	Neighbors      []RuntimeNeighborConfig `yaml:"neighbors" json:"neighbors"`
 }

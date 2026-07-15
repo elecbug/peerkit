@@ -16,6 +16,10 @@ It creates one container per peer, restricts libp2p connections to the configure
 - Node processing delay, workers, and queues
 - Edge delay, loss, bandwidth, and queues
 - Per-message propagation and control-plane metrics
+- Average-degree ER generation for scale-stable experiments
+- Dynamic per-edge queues without queue-capacity-sized preallocation
+- Asynchronous buffered JSONL metrics
+- Bounded-parallel controller initialization
 
 ## Requirements
 
@@ -93,6 +97,15 @@ experiment:
   warmup_ms: 1000
   control_base_port: 18080
 
+controller:
+  parallelism: 32
+  operation_timeout_seconds: 180
+
+metrics:
+  buffer_bytes: 262144
+  queue_capacity: 512
+  flush_interval_ms: 200
+
 domain:
   n: 100
   id_prefix: n
@@ -100,20 +113,20 @@ domain:
 
   topology:
     model: er
-    p: 0.06
+    average_degree: 12
     ensure_connected: true
 
   node:
     processing_delay: "normal(mean=100ms, stddev=25ms)"
     workers: 2
-    queue_capacity: 2048
+    queue_capacity: 512
     overflow_policy: drop_new
 
   edge:
     delay: "exponential(mean=30ms)"
     loss_rate: 0.005
     bandwidth_mbps: 100
-    queue_capacity: 2048
+    queue_capacity: 64
 
 traffic:
   - source: random
@@ -161,14 +174,36 @@ Other domain processing distributions (`constant`, `uniform`, `exponential`, and
 
 ### Erdős-Rényi
 
+For experiments that change `n`, prefer a fixed expected degree:
+
+```yaml
+topology:
+  model: er
+  average_degree: 12
+  ensure_connected: true
+```
+
+peerkit converts this to:
+
+```text
+p = average_degree / (n - 1)
+```
+
+This keeps the expected edge count approximately linear in `n`:
+
+```text
+E[|E|] = n * average_degree / 2
+```
+
+The original probability form remains available:
+
 ```yaml
 topology:
   model: er
   p: 0.06
-  ensure_connected: true
 ```
 
-Every possible undirected edge is independently sampled with probability `p`. `ensure_connected` adds the minimum number of bridging edges between generated components.
+`p` and `average_degree` are mutually exclusive. `ensure_connected` adds the minimum number of bridging edges between generated components.
 
 ### Barabási-Albert
 
@@ -197,6 +232,70 @@ topology:
 ```
 
 Other supported models are `ring`, `path`, and `complete`.
+
+## Scalability controls
+
+### Dynamic edge queues
+
+`edge.queue_capacity` remains a strict per-direction bound, but peerkit no longer allocates a channel containing that many `outboundItem` slots for every directed edge. Each edge now uses a dynamically growing FIFO and releases its backing slice when empty.
+
+This changes memory behavior from capacity-driven allocation toward actual queued traffic:
+
+```text
+previous: approximately O(directed_edges * queue_capacity)
+current:  O(directed_edges + currently_queued_frames)
+```
+
+Control frames retain priority over payload frames, and FIFO order is preserved within each queue.
+
+### Buffered metrics
+
+```yaml
+metrics:
+  buffer_bytes: 262144
+  queue_capacity: 512
+  flush_interval_ms: 200
+```
+
+Events are placed in a bounded per-peer queue and written by one writer goroutine. The JSONL buffer is flushed periodically and when the peer closes, rather than after every event.
+
+These values are **per peer**. Large values multiplied by hundreds of containers can consume substantial memory.
+
+### Parallel controller operations
+
+```yaml
+controller:
+  parallelism: 32
+  operation_timeout_seconds: 180
+```
+
+Readiness probes, connection commands, topology checks, and stream preparation use bounded parallelism. `operation_timeout_seconds` applies to the connection, topology convergence, and stream-preparation phases.
+
+A larger value does not increase steady-state simulation resource use; it only gives large deployments more time to converge.
+
+### Recommended large-domain starting point
+
+```yaml
+controller:
+  parallelism: 32
+  operation_timeout_seconds: 180
+
+metrics:
+  buffer_bytes: 262144
+  queue_capacity: 512
+  flush_interval_ms: 200
+
+domain:
+  n: 500
+  topology:
+    model: er
+    average_degree: 12
+    ensure_connected: true
+  edge:
+    queue_capacity: 64
+```
+
+The one-container-per-peer model and one published control port per peer still remain. For substantially larger single-host experiments, the next architectural step is multi-peer container sharding.
 
 ## Delay expressions
 

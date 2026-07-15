@@ -61,7 +61,7 @@ func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generat
 		}()
 	}
 
-	client := newControlClient()
+	client := newControlClient(scenario.Controller.Parallelism)
 	readyCtx, cancelReady := context.WithTimeout(ctx, time.Duration(options.ReadyTimeoutSeconds)*time.Second)
 	if err := client.waitReady(readyCtx, run.ControlPorts); err != nil {
 		cancelReady()
@@ -70,14 +70,15 @@ func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generat
 	cancelReady()
 	log.Printf("all peers are ready")
 
-	connectCtx, cancelConnect := context.WithTimeout(ctx, 30*time.Second)
+	operationTimeout := time.Duration(scenario.Controller.OperationTimeoutSeconds) * time.Second
+	connectCtx, cancelConnect := context.WithTimeout(ctx, operationTimeout)
 	if err := client.connectAll(connectCtx, run.ControlPorts); err != nil {
 		cancelConnect()
 		return run, nil, err
 	}
 	cancelConnect()
 
-	topologyCtx, cancelTopology := context.WithTimeout(ctx, 30*time.Second)
+	topologyCtx, cancelTopology := context.WithTimeout(ctx, operationTimeout)
 	if err := client.waitTopology(topologyCtx, run.ControlPorts); err != nil {
 		cancelTopology()
 		return run, nil, err
@@ -85,7 +86,7 @@ func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generat
 	cancelTopology()
 	log.Printf("topology converged with %d nodes and %d edges", len(scenario.Topology.Nodes), len(scenario.Topology.Edges))
 
-	prepareCtx, cancelPrepare := context.WithTimeout(ctx, 30*time.Second)
+	prepareCtx, cancelPrepare := context.WithTimeout(ctx, operationTimeout)
 	if err := client.prepareAll(prepareCtx, run.ControlPorts); err != nil {
 		cancelPrepare()
 		return run, nil, err

@@ -26,6 +26,21 @@ func (s *Scenario) ApplyDefaults() {
 	if s.Experiment.ControlBasePort == 0 {
 		s.Experiment.ControlBasePort = 18_080
 	}
+	if s.Controller.Parallelism == 0 {
+		s.Controller.Parallelism = 32
+	}
+	if s.Controller.OperationTimeoutSeconds == 0 {
+		s.Controller.OperationTimeoutSeconds = 180
+	}
+	if s.Metrics.BufferBytes == 0 {
+		s.Metrics.BufferBytes = 256 * 1024
+	}
+	if s.Metrics.QueueCapacity == 0 {
+		s.Metrics.QueueCapacity = 512
+	}
+	if s.Metrics.FlushIntervalMS == 0 {
+		s.Metrics.FlushIntervalMS = 200
+	}
 
 	applyNodeDefaults(&s.Defaults.Node)
 	applyEdgeDefaults(&s.Defaults.Edge)

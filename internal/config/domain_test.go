@@ -142,3 +142,29 @@ func TestDomainNodeMeanSamplingDoesNotChangeTopology(t *testing.T) {
 		t.Fatal("node performance sampling changed the generated topology")
 	}
 }
+
+func TestERAverageDegreeMatchesEquivalentProbability(t *testing.T) {
+	const n = 200
+	const averageDegree = 12.0
+	withAverageDegree := domainScenario(DomainTopologyConfig{
+		Model: "er", AverageDegree: floatPointer(averageDegree),
+	}, n)
+	withProbability := domainScenario(DomainTopologyConfig{
+		Model: "er", P: floatPointer(averageDegree / float64(n-1)),
+	}, n)
+	resolveDomainForTest(t, withAverageDegree)
+	resolveDomainForTest(t, withProbability)
+	if !reflect.DeepEqual(withAverageDegree.Topology.Edges, withProbability.Topology.Edges) {
+		t.Fatal("average_degree did not produce the same graph as its equivalent p")
+	}
+}
+
+func TestERRejectsProbabilityAndAverageDegreeTogether(t *testing.T) {
+	scenario := domainScenario(DomainTopologyConfig{
+		Model: "er", P: floatPointer(0.1), AverageDegree: floatPointer(12),
+	}, 200)
+	scenario.ApplyDefaults()
+	if err := scenario.ExpandDomain(); err == nil {
+		t.Fatal("expected p and average_degree conflict")
+	}
+}

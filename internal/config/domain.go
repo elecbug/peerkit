@@ -144,13 +144,27 @@ func generateDomainEdges(n int, cfg DomainTopologyConfig, rng *rand.Rand) ([]gen
 	model := strings.ToLower(strings.TrimSpace(cfg.Model))
 	switch model {
 	case "er", "erdos-renyi", "erdos_renyi", "gnp":
-		if cfg.P == nil {
-			return nil, fmt.Errorf("domain.topology.p is required for ER")
+		if cfg.P != nil && cfg.AverageDegree != nil {
+			return nil, fmt.Errorf("domain.topology.p and average_degree cannot be used together")
 		}
-		if *cfg.P < 0 || *cfg.P > 1 {
+		p := 0.0
+		switch {
+		case cfg.AverageDegree != nil:
+			if *cfg.AverageDegree < 0 || *cfg.AverageDegree > float64(n-1) {
+				return nil, fmt.Errorf("domain.topology.average_degree must be between 0 and n-1")
+			}
+			if n > 1 {
+				p = *cfg.AverageDegree / float64(n-1)
+			}
+		case cfg.P != nil:
+			p = *cfg.P
+		default:
+			return nil, fmt.Errorf("domain.topology.p or average_degree is required for ER")
+		}
+		if p < 0 || p > 1 {
 			return nil, fmt.Errorf("domain.topology.p must be between 0 and 1")
 		}
-		return generateER(n, *cfg.P, rng), nil
+		return generateER(n, p, rng), nil
 
 	case "ba", "barabasi-albert", "barabasi_albert":
 		if cfg.M <= 0 {

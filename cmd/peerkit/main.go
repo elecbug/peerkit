@@ -16,7 +16,7 @@ import (
 	"github.com/k-p2plab/peerkit/internal/controller"
 )
 
-const version = "0.4.0"
+const version = "0.5.0"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -96,7 +96,7 @@ func runCommand(args []string) {
 	image := flags.String("image", "peerkit-peer:dev", "peer image tag")
 	noBuild := flags.Bool("no-build", false, "skip docker image build")
 	keep := flags.Bool("keep", false, "keep containers running after the experiment")
-	readyTimeout := flags.Int("ready-timeout", 60, "peer readiness timeout in seconds")
+	readyTimeout := flags.Int("ready-timeout", 180, "peer readiness timeout in seconds")
 	flags.Parse(args)
 	if flags.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: peerkit run [options] <scenario.yaml>")

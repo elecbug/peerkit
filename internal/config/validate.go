@@ -26,6 +26,21 @@ func (s *Scenario) Validate() error {
 	if s.Experiment.ControlBasePort < 1024 || s.Experiment.ControlBasePort+len(s.Topology.Nodes) > 65535 {
 		return fmt.Errorf("control port range is invalid")
 	}
+	if s.Controller.Parallelism <= 0 {
+		return fmt.Errorf("controller.parallelism must be positive")
+	}
+	if s.Controller.OperationTimeoutSeconds <= 0 {
+		return fmt.Errorf("controller.operation_timeout_seconds must be positive")
+	}
+	if s.Metrics.BufferBytes < 4096 {
+		return fmt.Errorf("metrics.buffer_bytes must be at least 4096")
+	}
+	if s.Metrics.QueueCapacity <= 0 {
+		return fmt.Errorf("metrics.queue_capacity must be positive")
+	}
+	if s.Metrics.FlushIntervalMS <= 0 {
+		return fmt.Errorf("metrics.flush_interval_ms must be positive")
+	}
 
 	nodes := make(map[string]int, len(s.Topology.Nodes))
 	for i, node := range s.Topology.Nodes {

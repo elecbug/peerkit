@@ -69,8 +69,10 @@ type outboundItem struct {
 type edgeSender struct {
 	owner        *Peer
 	neighbor     config.RuntimeNeighborConfig
-	dataQueue    chan outboundItem
-	controlQueue chan outboundItem
+	queueMu      sync.Mutex
+	dataQueue    []outboundItem
+	controlQueue []outboundItem
+	wake         chan struct{}
 	dataRNG      *rand.Rand
 	controlRNG   *rand.Rand
 	streamMu     sync.Mutex
@@ -130,13 +132,13 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 		libp2p.DisableRelay(),
 		libp2p.DisableMetrics(),
 		libp2p.Ping(false),
-		libp2p.UserAgent("peerkit/0.4.0"),
+		libp2p.UserAgent("peerkit/0.5.0"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create libp2p host: %w", err)
 	}
 
-	writer, err := metrics.NewWriter(cfg.ResultFile)
+	writer, err := metrics.NewWriter(cfg.ResultFile, cfg.Metrics)
 	if err != nil {
 		_ = h.Close()
 		return nil, err
@@ -163,10 +165,9 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 		p.host.Peerstore().AddAddrs(id, []multiaddr.Multiaddr{address}, peerstore.PermanentAddrTTL)
 		sender := &edgeSender{
 			owner: p, neighbor: neighbor,
-			dataQueue:    make(chan outboundItem, neighbor.Network.QueueCapacity),
-			controlQueue: make(chan outboundItem, neighbor.Network.QueueCapacity),
-			dataRNG:      rand.New(rand.NewSource(stableSeed(cfg.Seed, cfg.NodeID+"->"+neighbor.NodeID+"-data"))),
-			controlRNG:   rand.New(rand.NewSource(stableSeed(cfg.Seed, cfg.NodeID+"->"+neighbor.NodeID+"-control"))),
+			wake:       make(chan struct{}, 1),
+			dataRNG:    rand.New(rand.NewSource(stableSeed(cfg.Seed, cfg.NodeID+"->"+neighbor.NodeID+"-data"))),
+			controlRNG: rand.New(rand.NewSource(stableSeed(cfg.Seed, cfg.NodeID+"->"+neighbor.NodeID+"-control"))),
 		}
 		p.senders[neighbor.NodeID] = sender
 		go sender.run(peerCtx)
@@ -453,10 +454,7 @@ func (s *edgeSender) enqueueData(frame WireFrame) {
 		return
 	}
 	item := outboundItem{frame: frame, enqueuedAt: time.Now()}
-	select {
-	case s.dataQueue <- item:
-	case <-s.owner.ctx.Done():
-	default:
+	if !s.enqueue(item, false) {
 		s.owner.record(metrics.Event{
 			Type: "message_dropped", FrameType: frameTypeData,
 			MessageID: frame.MessageID, Origin: frame.Origin,
@@ -468,10 +466,7 @@ func (s *edgeSender) enqueueData(frame WireFrame) {
 
 func (s *edgeSender) enqueueControl(frame WireFrame) {
 	item := outboundItem{frame: frame, enqueuedAt: time.Now()}
-	select {
-	case s.controlQueue <- item:
-	case <-s.owner.ctx.Done():
-	default:
+	if !s.enqueue(item, true) {
 		s.owner.record(metrics.Event{
 			Type: "control_dropped", FrameType: frame.Type,
 			MessageID: frame.MessageID, Origin: frame.Origin,
@@ -481,27 +476,68 @@ func (s *edgeSender) enqueueControl(frame WireFrame) {
 	}
 }
 
+// enqueue uses dynamically growing slices rather than preallocating a channel
+// with queue_capacity entries for every directed edge. queue_capacity remains
+// a strict per-edge bound, but idle edges consume only a small fixed amount of
+// memory.
+func (s *edgeSender) enqueue(item outboundItem, control bool) bool {
+	s.queueMu.Lock()
+	if control {
+		if len(s.controlQueue) >= s.neighbor.Network.QueueCapacity {
+			s.queueMu.Unlock()
+			return false
+		}
+		s.controlQueue = append(s.controlQueue, item)
+	} else {
+		if len(s.dataQueue) >= s.neighbor.Network.QueueCapacity {
+			s.queueMu.Unlock()
+			return false
+		}
+		s.dataQueue = append(s.dataQueue, item)
+	}
+	s.queueMu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func (s *edgeSender) dequeue() (outboundItem, bool) {
+	s.queueMu.Lock()
+	defer s.queueMu.Unlock()
+	if len(s.controlQueue) > 0 {
+		item := s.controlQueue[0]
+		s.controlQueue[0] = outboundItem{}
+		s.controlQueue = s.controlQueue[1:]
+		if len(s.controlQueue) == 0 {
+			s.controlQueue = nil
+		}
+		return item, true
+	}
+	if len(s.dataQueue) > 0 {
+		item := s.dataQueue[0]
+		s.dataQueue[0] = outboundItem{}
+		s.dataQueue = s.dataQueue[1:]
+		if len(s.dataQueue) == 0 {
+			s.dataQueue = nil
+		}
+		return item, true
+	}
+	return outboundItem{}, false
+}
+
 func (s *edgeSender) run(ctx context.Context) {
 	for {
-		// Control frames are intentionally prioritized over payload frames.
-		select {
-		case <-ctx.Done():
-			s.closeStream()
-			return
-		case item := <-s.controlQueue:
+		if item, ok := s.dequeue(); ok {
 			s.send(ctx, item)
 			continue
-		default:
 		}
-
 		select {
 		case <-ctx.Done():
 			s.closeStream()
 			return
-		case item := <-s.controlQueue:
-			s.send(ctx, item)
-		case item := <-s.dataQueue:
-			s.send(ctx, item)
+		case <-s.wake:
 		}
 	}
 }

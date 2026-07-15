@@ -110,6 +110,7 @@ func generateRuntime(scenarioPath string, scenario *config.Scenario, options Run
 			PrivateKey:    identity.privateKey,
 			ListenAddress: "/ip4/0.0.0.0/tcp/4001", ControlAddress: ":8080",
 			ResultFile:  "/results/" + node.ID + ".jsonl",
+			Metrics:     scenario.Metrics,
 			Performance: *node.Performance, Neighbors: neighbors[node.ID],
 		}
 		configPath := filepath.Join(configDir, node.ID+".yaml")

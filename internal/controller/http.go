@@ -4,22 +4,31 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"reflect"
 	"sort"
+	"sync"
 	"time"
 
 	peerkitp2p "github.com/k-p2plab/peerkit/internal/p2p"
 )
 
 type controlClient struct {
-	http *http.Client
+	http        *http.Client
+	parallelism int
 }
 
-func newControlClient() *controlClient {
-	return &controlClient{http: &http.Client{Timeout: 5 * time.Second}}
+func newControlClient(parallelism int) *controlClient {
+	if parallelism <= 0 {
+		parallelism = 32
+	}
+	return &controlClient{
+		http:        &http.Client{Timeout: 5 * time.Second},
+		parallelism: parallelism,
+	}
 }
 
 func (c *controlClient) waitReady(ctx context.Context, ports map[string]int) error {
@@ -30,16 +39,23 @@ func (c *controlClient) waitReady(ctx context.Context, ports map[string]int) err
 		remaining[node] = port
 	}
 	for len(remaining) > 0 {
-		for node, port := range remaining {
+		ready := make(chan string, len(remaining))
+		_ = c.forEach(ctx, remaining, func(ctx context.Context, node string, port int) error {
 			request, _ := http.NewRequestWithContext(ctx, http.MethodGet, endpoint(port, "/healthz"), nil)
 			response, err := c.http.Do(request)
-			if err == nil {
-				io.Copy(io.Discard, response.Body)
-				response.Body.Close()
-				if response.StatusCode == http.StatusOK {
-					delete(remaining, node)
-				}
+			if err != nil {
+				return nil
 			}
+			io.Copy(io.Discard, response.Body)
+			response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				ready <- node
+			}
+			return nil
+		})
+		close(ready)
+		for node := range ready {
+			delete(remaining, node)
 		}
 		if len(remaining) == 0 {
 			return nil
@@ -54,7 +70,7 @@ func (c *controlClient) waitReady(ctx context.Context, ports map[string]int) err
 }
 
 func (c *controlClient) connectAll(ctx context.Context, ports map[string]int) error {
-	for node, port := range ports {
+	return c.forEach(ctx, ports, func(ctx context.Context, node string, port int) error {
 		request, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint(port, "/v1/connect"), nil)
 		response, err := c.http.Do(request)
 		if err != nil {
@@ -65,12 +81,12 @@ func (c *controlClient) connectAll(ctx context.Context, ports map[string]int) er
 		if response.StatusCode >= 300 {
 			return fmt.Errorf("connect %s returned %s: %s", node, response.Status, string(body))
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (c *controlClient) prepareAll(ctx context.Context, ports map[string]int) error {
-	for node, port := range ports {
+	return c.forEach(ctx, ports, func(ctx context.Context, node string, port int) error {
 		request, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint(port, "/v1/prepare"), nil)
 		response, err := c.http.Do(request)
 		if err != nil {
@@ -81,36 +97,79 @@ func (c *controlClient) prepareAll(ctx context.Context, ports map[string]int) er
 		if response.StatusCode >= 300 {
 			return fmt.Errorf("prepare %s returned %s: %s", node, response.Status, string(body))
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (c *controlClient) waitTopology(ctx context.Context, ports map[string]int) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
+		var mismatchMu sync.Mutex
 		mismatched := make([]string, 0)
-		for node, port := range ports {
+		_ = c.forEach(ctx, ports, func(ctx context.Context, node string, port int) error {
 			status, err := c.status(ctx, port)
 			if err != nil {
+				mismatchMu.Lock()
 				mismatched = append(mismatched, node+": "+err.Error())
-				continue
+				mismatchMu.Unlock()
+				return nil
 			}
 			sort.Strings(status.ConnectedNeighbors)
 			sort.Strings(status.ExpectedNeighbors)
 			if !reflect.DeepEqual(status.ConnectedNeighbors, status.ExpectedNeighbors) {
+				mismatchMu.Lock()
 				mismatched = append(mismatched, fmt.Sprintf("%s connected=%v expected=%v", node, status.ConnectedNeighbors, status.ExpectedNeighbors))
+				mismatchMu.Unlock()
 			}
-		}
+			return nil
+		})
 		if len(mismatched) == 0 {
 			return nil
 		}
+		sort.Strings(mismatched)
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("topology did not converge: %v: %w", mismatched, ctx.Err())
 		case <-ticker.C:
 		}
 	}
+}
+
+func (c *controlClient) forEach(
+	ctx context.Context,
+	ports map[string]int,
+	fn func(context.Context, string, int) error,
+) error {
+	sem := make(chan struct{}, c.parallelism)
+	errCh := make(chan error, len(ports))
+	var wg sync.WaitGroup
+	for node, port := range ports {
+		node, port := node, port
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				errCh <- ctx.Err()
+				return
+			}
+			defer func() { <-sem }()
+			if err := fn(ctx, node, port); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	var errs []error
+	for err := range errCh {
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (c *controlClient) status(ctx context.Context, port int) (peerkitp2p.StatusResponse, error) {
