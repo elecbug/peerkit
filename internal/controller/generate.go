@@ -103,15 +103,13 @@ func generateRuntime(scenarioPath string, scenario *config.Scenario, options Run
 		port := scenario.Experiment.ControlBasePort + index
 		controlPorts[node.ID] = port
 		runtimeConfig := config.RuntimeNodeConfig{
-			RunID: runID, ExperimentName: scenario.Experiment.Name,
+			RunID: runID, ExperimentName: scenario.Experiment.Name, Protocol: scenario.Protocol,
 			NodeID: node.ID, NodeIndex: index,
 			Seed:          scenario.Experiment.Seed + int64(index)*1_000_003,
 			PrivateKey:    identity.privateKey,
 			ListenAddress: "/ip4/0.0.0.0/tcp/4001", ControlAddress: ":8080",
-			ResultFile:                 "/results/" + node.ID + ".jsonl",
-			Performance:                *node.Performance,
-			SuppressDuplicateNeighbors: scenario.Forwarding.SuppressionEnabled(),
-			Neighbors:                  neighbors[node.ID],
+			ResultFile:  "/results/" + node.ID + ".jsonl",
+			Performance: *node.Performance, Neighbors: neighbors[node.ID],
 		}
 		configPath := filepath.Join(configDir, node.ID+".yaml")
 		if err := config.WriteYAML(configPath, runtimeConfig); err != nil {

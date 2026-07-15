@@ -1,4 +1,5 @@
 version: 1
+protocol: base_flooding
 
 experiment:
   name: matrix-demo

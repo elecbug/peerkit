@@ -4,6 +4,7 @@ type Event struct {
 	TimestampNS     int64   `json:"timestamp_ns"`
 	RunID           string  `json:"run_id"`
 	Experiment      string  `json:"experiment"`
+	Protocol        string  `json:"protocol"`
 	Type            string  `json:"type"`
 	Node            string  `json:"node"`
 	PeerID          string  `json:"peer_id,omitempty"`

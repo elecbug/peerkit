@@ -14,7 +14,7 @@ It creates one Docker container per peer, restricts libp2p connections to the co
 - Deterministic topology and random traffic-source generation from `experiment.seed`
 - One libp2p host per container
 - Strict neighbor allow-list through `ConnectionGater`
-- Eager-push flooding with processing-window duplicate-neighbor suppression
+- Selectable flooding protocol: `base_flooding` or `duplicate_aware_flooding`
 - Node processing delay and worker pool
 - Per-directed-edge transmission queue
 - Application-level propagation delay, loss, and bandwidth emulation
@@ -22,7 +22,7 @@ It creates one Docker container per peer, restricts libp2p connections to the co
 - Fixed or uniformly random per-message propagation sources
 - Per-message result aggregation
 
-Dynamic topology, churn, GossipSub, Kademlia, mDNS, NAT traversal, and multi-host deployment are intentionally excluded from v0.2.2.
+Dynamic topology, churn, GossipSub, Kademlia, mDNS, NAT traversal, and multi-host deployment are intentionally excluded from v0.3.0.
 
 ## Requirements
 
@@ -34,16 +34,16 @@ Dynamic topology, churn, GossipSub, Kademlia, mDNS, NAT traversal, and multi-hos
 
 ```bash
 go mod tidy
-go run ./cmd/peerkit validate examples/ring.yaml
-go run ./cmd/peerkit run examples/ring.yaml
+go run ./cmd/peerkit validate examples/edge.yaml
+go run ./cmd/peerkit run examples/edge.yaml
 ```
 
 A generated 100-node ER experiment can be validated and expanded without defining every node:
 
 ```bash
-go run ./cmd/peerkit validate examples/domain.yml
-go run ./cmd/peerkit expand -o /tmp/resolved-domain.yaml examples/domain.yml
-go run ./cmd/peerkit run examples/domain.yml
+go run ./cmd/peerkit validate examples/er-domain.yaml
+go run ./cmd/peerkit expand -o /tmp/resolved-domain.yaml examples/er-domain.yaml
+go run ./cmd/peerkit run examples/er-domain.yaml
 ```
 
 The `run` command:
@@ -61,13 +61,13 @@ Use an already-built image:
 
 ```bash
 docker build -t peerkit-peer:dev -f deploy/Dockerfile .
-go run ./cmd/peerkit run --no-build examples/ring.yaml
+go run ./cmd/peerkit run --no-build examples/edge.yaml
 ```
 
 Keep the stopped containers for inspection after the experiment:
 
 ```bash
-go run ./cmd/peerkit run --keep examples/ring.yaml
+go run ./cmd/peerkit run --keep examples/edge.yaml
 ```
 
 Stop a retained run:
@@ -76,12 +76,39 @@ Stop a retained run:
 go run ./cmd/peerkit down .peerkit/runs/<run-directory>
 ```
 
+## Flooding protocols
+
+The top-level `protocol` field selects the forwarding algorithm used by every peer in a run.
+
+### Base flooding
+
+```yaml
+version: 1
+protocol: base_flooding
+```
+
+`base_flooding` reproduces the original peerkit behavior. A peer processes the first copy of a message and forwards it to every neighbor except the neighbor that supplied that first copy. Later copies are counted as duplicates and discarded, but they do not modify the already pending forwarding set.
+
+### Duplicate-Aware Flooding (DAF)
+
+```yaml
+version: 1
+protocol: duplicate_aware_flooding
+```
+
+`duplicate_aware_flooding` adds implicit multi-path suppression. While the first copy is queued or being processed, every neighbor that sends another copy is known to already hold the message. At the instant local processing completes, peerkit freezes that holder set and omits those neighbors from forwarding. Duplicates arriving after the freeze are still counted but cannot cancel forwarding that has already begun.
+
+The protocol emits a `message_suppressed` event for every transmission avoided in this way. `messages.csv` contains a `suppressions` column and `summary.json` contains `total_suppressions`. The first-copy sender is already excluded by both protocols and is therefore not counted as a suppression.
+
+For backward compatibility, an omitted `protocol` field defaults to `base_flooding`. Explicitly declaring it is recommended for reproducible experiments.
+
 ## Compact domain format
 
 `domain` is an alternative to `topology`. The two forms cannot be used together. A domain declaration is expanded into explicit nodes and edges before execution.
 
 ```yaml
 version: 1
+protocol: duplicate_aware_flooding
 
 experiment:
   name: er-domain-demo
@@ -184,13 +211,13 @@ One dimension may be omitted when the node count is exactly divisible by the oth
 ### Inspecting the generated graph
 
 ```bash
-go run ./cmd/peerkit expand examples/domain.yml
+go run ./cmd/peerkit expand examples/er-domain.yaml
 ```
 
 Write the fully resolved explicit scenario to a file:
 
 ```bash
-go run ./cmd/peerkit expand -o resolved.yaml examples/domain.yml
+go run ./cmd/peerkit expand -o resolved.yaml examples/er-domain.yaml
 ```
 
 The expanded file contains every generated node, edge, and inherited performance setting. It can be edited and run as a normal explicit scenario.
@@ -325,28 +352,9 @@ Per-edge overrides:
     queue_capacity: 128
 ```
 
-`bandwidth_mbps: 0` disables serialization-delay emulation. Bandwidth is modeled from `payload_size_bytes`; the dummy payload itself is not transmitted over libp2p in v0.2.2.
+`bandwidth_mbps: 0` disables serialization-delay emulation. Bandwidth is modeled from `payload_size_bytes`; the dummy payload itself is not transmitted over libp2p in v0.3.0.
 
-### Duplicate-neighbor suppression
-
-By default, a node records every neighbor that delivers the same message while
-the first copy is still queued or being processed. At the processing-completion
-cutoff, those neighbors are removed from the forwarding fan-out because they
-already possess the message.
-
-```yaml
-forwarding:
-  suppress_duplicate_neighbors: true
-```
-
-Set the value to `false` to reproduce the previous naive eager-push baseline,
-which skips only the neighbor that supplied the first copy. Suppressed outbound
-operations are written as `message_suppressed` events and aggregated into the
-`suppressions` column of `messages.csv` and `total_suppressions` in
-`summary.json`. Duplicates arriving after processing completes are still counted
-but cannot cancel forwarding that has already been decided.
-
-## Traffic
+### Traffic
 
 ```yaml
 traffic:
@@ -387,10 +395,10 @@ Important raw event types:
 - `message_received`
 - `message_processed`
 - `message_sent`
-- `message_suppressed`
 - `message_dropped`
+- `message_suppressed` (`duplicate_aware_flooding` only)
 
-`summary.json` reports average reachability, average completion delay, transmissions, duplicates, drops, and effective forwarding suppressions.
+`summary.json` reports the selected protocol, average reachability, average completion delay, transmissions, duplicates, drops, and suppressions.
 
 ## Modeling boundary
 

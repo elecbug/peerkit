@@ -1,8 +1,16 @@
 package config
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/k-p2plab/peerkit/internal/protocols"
+)
 
 func (s *Scenario) ApplyDefaults() {
+	s.Protocol = protocols.Normalize(s.Protocol)
+	if s.Protocol == "" {
+		s.Protocol = protocols.BaseFlooding
+	}
 	if s.Version == 0 {
 		s.Version = 1
 	}
@@ -24,10 +32,6 @@ func (s *Scenario) ApplyDefaults() {
 
 	applyNodeDefaults(&s.Defaults.Node)
 	applyEdgeDefaults(&s.Defaults.Edge)
-	if s.Forwarding.SuppressDuplicateNeighbors == nil {
-		enabled := true
-		s.Forwarding.SuppressDuplicateNeighbors = &enabled
-	}
 
 	for i := range s.Topology.Nodes {
 		if s.Topology.Nodes[i].Performance == nil {

@@ -27,6 +27,7 @@ type MessageSummary struct {
 }
 
 type RunSummary struct {
+	Protocol                 string  `json:"protocol"`
 	Messages                 int     `json:"messages"`
 	Nodes                    int     `json:"nodes"`
 	AverageReachability      float64 `json:"average_reachability"`
@@ -58,8 +59,12 @@ func Aggregate(resultDir string, nodeCount int) (*RunSummary, error) {
 	}
 
 	messages := make(map[string]*messageAccumulator)
+	protocolName := ""
 	for _, path := range files {
 		if err := readEvents(path, func(event Event) {
+			if protocolName == "" && event.Protocol != "" {
+				protocolName = event.Protocol
+			}
 			if event.MessageID == "" {
 				return
 			}
@@ -120,7 +125,7 @@ func Aggregate(resultDir string, nodeCount int) (*RunSummary, error) {
 		return rows[i].CreatedAtNS < rows[j].CreatedAtNS
 	})
 
-	summary := &RunSummary{Messages: len(rows), Nodes: nodeCount}
+	summary := &RunSummary{Protocol: protocolName, Messages: len(rows), Nodes: nodeCount}
 	for _, row := range rows {
 		summary.AverageReachability += row.Reachability
 		summary.AverageCompletionDelayMS += row.CompletionDelayMS
@@ -187,7 +192,8 @@ func writeMessageCSV(path string, rows []MessageSummary) error {
 			strconv.Itoa(row.ReachedNodes), strconv.Itoa(row.TotalNodes),
 			strconv.FormatFloat(row.Reachability, 'f', 6, 64),
 			strconv.FormatFloat(row.CompletionDelayMS, 'f', 3, 64),
-			strconv.Itoa(row.Transmissions), strconv.Itoa(row.Duplicates), strconv.Itoa(row.Drops), strconv.Itoa(row.Suppressions),
+			strconv.Itoa(row.Transmissions), strconv.Itoa(row.Duplicates), strconv.Itoa(row.Drops),
+			strconv.Itoa(row.Suppressions),
 		}
 		if err := writer.Write(record); err != nil {
 			return err

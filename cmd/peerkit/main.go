@@ -16,7 +16,7 @@ import (
 	"github.com/k-p2plab/peerkit/internal/controller"
 )
 
-const version = "0.2.2"
+const version = "0.3.0"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -53,8 +53,8 @@ func validateCommand(args []string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("valid: %s (%d nodes, %d edges, %d traffic patterns)\n",
-		scenario.Experiment.Name, len(scenario.Topology.Nodes),
+	fmt.Printf("valid: %s [protocol=%s] (%d nodes, %d edges, %d traffic patterns)\n",
+		scenario.Experiment.Name, scenario.Protocol, len(scenario.Topology.Nodes),
 		len(scenario.Topology.Edges), len(scenario.Traffic))
 }
 
@@ -119,6 +119,7 @@ func runCommand(args []string) {
 	fmt.Printf("messages: %d\n", summary.Messages)
 	fmt.Printf("average reachability: %.6f\n", summary.AverageReachability)
 	fmt.Printf("average completion delay: %.3f ms\n", summary.AverageCompletionDelayMS)
+	fmt.Printf("protocol: %s\n", summary.Protocol)
 	fmt.Printf("transmissions: %d, duplicates: %d, drops: %d, suppressions: %d\n",
 		summary.TotalTransmissions, summary.TotalDuplicates, summary.TotalDrops, summary.TotalSuppressions)
 }

@@ -1,4 +1,5 @@
 version: 1
+protocol: duplicate_aware_flooding
 
 experiment:
   name: er-domain-demo
@@ -6,11 +7,6 @@ experiment:
   duration_ms: 12000
   warmup_ms: 1000
   control_base_port: 18080
-
-# Skip forwarding to neighbors that sent a duplicate while the local node was
-# still waiting or processing the first copy. This is enabled by default.
-forwarding:
-  suppress_duplicate_neighbors: true
 
 # Compact domain declaration. peerkit expands this into explicit nodes and edges
 # before Docker Compose/runtime configuration is generated.
@@ -41,7 +37,7 @@ domain:
     memory_limit_mb: 128
 
 traffic:
-  - source: random
+  - source: n000
     start_at_ms: 0
     count: 100
     interval_ms: 50

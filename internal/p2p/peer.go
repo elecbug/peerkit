@@ -29,7 +29,6 @@ import (
 	"github.com/k-p2plab/peerkit/internal/config"
 	"github.com/k-p2plab/peerkit/internal/metrics"
 	"github.com/k-p2plab/peerkit/internal/model"
-	"github.com/k-p2plab/peerkit/internal/p2pstate"
 )
 
 const ProtocolID = protocol.ID("/peerkit/eager-push/1.0.0")
@@ -40,6 +39,7 @@ type Peer struct {
 	cfg       *config.RuntimeNodeConfig
 	host      host.Host
 	writer    *metrics.Writer
+	protocol  forwardingProtocol
 	startedAt time.Time
 
 	neighborsByNode map[string]config.RuntimeNeighborConfig
@@ -47,7 +47,7 @@ type Peer struct {
 	senders         map[string]*edgeSender
 
 	seenMu sync.Mutex
-	seen   map[string]*p2pstate.State
+	seen   map[string]*forwardingState
 
 	processQueue chan processItem
 	sequence     atomic.Uint64
@@ -58,6 +58,7 @@ type processItem struct {
 	message    WireMessage
 	from       string
 	enqueuedAt time.Time
+	state      *forwardingState
 }
 
 type outboundItem struct {
@@ -77,6 +78,7 @@ type edgeSender struct {
 type StatusResponse struct {
 	NodeID             string   `json:"node_id"`
 	PeerID             string   `json:"peer_id"`
+	Protocol           string   `json:"protocol"`
 	ConnectedNeighbors []string `json:"connected_neighbors"`
 	ExpectedNeighbors  []string `json:"expected_neighbors"`
 	ProcessQueueLength int      `json:"process_queue_length"`
@@ -93,6 +95,12 @@ type InjectResponse struct {
 }
 
 func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
+	forwarding, err := selectForwardingProtocol(cfg.Protocol)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Protocol = forwarding.name()
+
 	privateKeyBytes, err := base64.StdEncoding.DecodeString(cfg.PrivateKey)
 	if err != nil {
 		return nil, fmt.Errorf("decode private key: %w", err)
@@ -123,7 +131,7 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 		libp2p.DisableRelay(),
 		libp2p.DisableMetrics(),
 		libp2p.Ping(false),
-		libp2p.UserAgent("peerkit/0.2.2"),
+		libp2p.UserAgent("peerkit/0.3.0"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create libp2p host: %w", err)
@@ -137,10 +145,10 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 
 	peerCtx, cancel := context.WithCancel(ctx)
 	p := &Peer{
-		ctx: peerCtx, cancel: cancel, cfg: cfg, host: h, writer: writer,
+		ctx: peerCtx, cancel: cancel, cfg: cfg, host: h, writer: writer, protocol: forwarding,
 		startedAt: time.Now(), neighborsByNode: neighborsByNode,
 		nodeByPeerID: nodeByPeerID, senders: make(map[string]*edgeSender, len(cfg.Neighbors)),
-		seen:         make(map[string]*p2pstate.State),
+		seen:         make(map[string]*forwardingState),
 		processQueue: make(chan processItem, cfg.Performance.QueueCapacity),
 	}
 
@@ -283,7 +291,7 @@ func (p *Peer) Status() StatusResponse {
 	sort.Strings(connected)
 	sort.Strings(expected)
 	return StatusResponse{
-		NodeID: p.cfg.NodeID, PeerID: p.host.ID().String(),
+		NodeID: p.cfg.NodeID, PeerID: p.host.ID().String(), Protocol: p.cfg.Protocol,
 		ConnectedNeighbors: connected, ExpectedNeighbors: expected,
 		ProcessQueueLength: len(p.processQueue),
 	}
@@ -301,14 +309,15 @@ func (p *Peer) Inject(count int, interval time.Duration, payloadBytes int) {
 			Origin: p.cfg.NodeID, Sequence: sequence, CreatedAtNS: now.UnixNano(),
 			Hop: 0, PayloadBytes: payloadBytes,
 		}
+		state := p.protocol.newMessageState()
 		p.seenMu.Lock()
-		p.seen[message.ID] = p2pstate.New("")
+		p.seen[message.ID] = state
 		p.seenMu.Unlock()
 		p.record(metrics.Event{
 			Type: "message_created", MessageID: message.ID, Origin: message.Origin,
 			Sequence: message.Sequence, Hop: message.Hop, PayloadBytes: message.PayloadBytes,
 		})
-		p.enqueueProcessing(processItem{message: message, enqueuedAt: now})
+		p.enqueueProcessing(processItem{message: message, enqueuedAt: now, state: state})
 	}
 }
 
@@ -338,14 +347,15 @@ func (p *Peer) acceptMessage(message WireMessage, from string) {
 	p.seenMu.Lock()
 	state, duplicate := p.seen[message.ID]
 	if !duplicate {
-		state = p2pstate.New(from)
+		state = p.protocol.newMessageState()
 		p.seen[message.ID] = state
 	}
 	p.seenMu.Unlock()
 
-	if duplicate && p.cfg.SuppressDuplicateNeighbors {
-		state.Observe(from)
+	if duplicate && state != nil {
+		state.observeDuplicate(from)
 	}
+
 	p.record(metrics.Event{
 		Type: "message_received", MessageID: message.ID, Origin: message.Origin,
 		From: from, Sequence: message.Sequence, Hop: message.Hop,
@@ -354,17 +364,7 @@ func (p *Peer) acceptMessage(message WireMessage, from string) {
 	if duplicate {
 		return
 	}
-	p.enqueueProcessing(processItem{message: message, from: from, enqueuedAt: now})
-}
-
-func (p *Peer) finishMessageProcessing(messageID string) map[string]struct{} {
-	p.seenMu.Lock()
-	state := p.seen[messageID]
-	p.seenMu.Unlock()
-	if state == nil {
-		return nil
-	}
-	return state.FinishProcessing()
+	p.enqueueProcessing(processItem{message: message, from: from, enqueuedAt: now, state: state})
 }
 
 func (p *Peer) enqueueProcessing(item processItem) {
@@ -372,6 +372,7 @@ func (p *Peer) enqueueProcessing(item processItem) {
 	case p.processQueue <- item:
 	case <-p.ctx.Done():
 	default:
+		item.state.close()
 		p.record(metrics.Event{
 			Type: "message_dropped", MessageID: item.message.ID, Origin: item.message.Origin,
 			From: item.from, Sequence: item.message.Sequence, Hop: item.message.Hop,
@@ -392,7 +393,7 @@ func (p *Peer) runWorker(ctx context.Context, workerIndex int) {
 			if !sleepContext(ctx, processingDelay) {
 				return
 			}
-			suppressed := p.finishMessageProcessing(item.message.ID)
+			suppressed := item.state.freeze()
 			p.record(metrics.Event{
 				Type: "message_processed", MessageID: item.message.ID, Origin: item.message.Origin,
 				From: item.from, Sequence: item.message.Sequence, Hop: item.message.Hop,
@@ -400,19 +401,16 @@ func (p *Peer) runWorker(ctx context.Context, workerIndex int) {
 				ProcessingNS: processingDelay.Nanoseconds(),
 			})
 			for nodeID, sender := range p.senders {
-				// The neighbor that supplied the first copy is always omitted.
 				if nodeID == item.from {
 					continue
 				}
-				if p.cfg.SuppressDuplicateNeighbors {
-					if _, alreadyHasMessage := suppressed[nodeID]; alreadyHasMessage {
-						p.record(metrics.Event{
-							Type: "message_suppressed", MessageID: item.message.ID, Origin: item.message.Origin,
-							To: nodeID, Sequence: item.message.Sequence, Hop: item.message.Hop + 1,
-							PayloadBytes: item.message.PayloadBytes, Reason: "duplicate_neighbor",
-						})
-						continue
-					}
+				if _, skip := suppressed[nodeID]; skip {
+					p.record(metrics.Event{
+						Type: "message_suppressed", MessageID: item.message.ID, Origin: item.message.Origin,
+						To: nodeID, Sequence: item.message.Sequence, Hop: item.message.Hop + 1,
+						PayloadBytes: item.message.PayloadBytes, Reason: "duplicate_neighbor",
+					})
+					continue
 				}
 				forward := item.message
 				forward.Hop++
@@ -578,6 +576,7 @@ func (p *Peer) record(event metrics.Event) {
 	event.TimestampNS = time.Now().UnixNano()
 	event.RunID = p.cfg.RunID
 	event.Experiment = p.cfg.ExperimentName
+	event.Protocol = p.cfg.Protocol
 	event.Node = p.cfg.NodeID
 	if err := p.writer.Write(event); err != nil {
 		log.Printf("write event: %v", err)
