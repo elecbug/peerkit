@@ -141,6 +141,14 @@ func generateSwarmRuntime(scenarioPath string, scenario *config.Scenario, option
 			"peerkit": map[string]any{
 				"driver":     "overlay",
 				"attachable": true,
+				"ipam": map[string]any{
+					"driver": "default",
+					"config": []any{
+						map[string]any{
+							"subnet": "10.200.0.0/16",
+						},
+					},
+				},
 			},
 		},
 	}
