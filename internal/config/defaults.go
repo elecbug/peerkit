@@ -41,6 +41,12 @@ func (s *Scenario) ApplyDefaults() {
 	if s.Metrics.FlushIntervalMS == 0 {
 		s.Metrics.FlushIntervalMS = 200
 	}
+	if s.Deployment.ComposeParallelism == 0 {
+		s.Deployment.ComposeParallelism = 4
+	}
+	if s.Controller.Parallelism == 0 {
+		s.Controller.Parallelism = 32
+	}
 
 	applyNodeDefaults(&s.Defaults.Node)
 	applyEdgeDefaults(&s.Defaults.Edge)

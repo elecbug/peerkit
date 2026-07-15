@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 )
 
 func buildPeerImage(ctx context.Context, projectRoot, image string) error {
@@ -13,9 +14,27 @@ func buildPeerImage(ctx context.Context, projectRoot, image string) error {
 		"docker", "build", "-t", image, "-f", "deploy/Dockerfile", ".")
 }
 
-func composeUp(ctx context.Context, run *generatedRun) error {
-	return runCommand(ctx, run.RunDir, os.Stdout, os.Stderr,
-		"docker", "compose", "-p", run.ProjectName, "-f", run.ComposeFile, "up", "-d")
+func composeUp(
+	ctx context.Context,
+	run *generatedRun,
+	parallelism int,
+) error {
+	return runCommand(
+		ctx,
+		run.RunDir,
+		os.Stdout,
+		os.Stderr,
+		"docker",
+		"compose",
+		"--parallel",
+		strconv.Itoa(parallelism),
+		"-p",
+		run.ProjectName,
+		"-f",
+		run.ComposeFile,
+		"up",
+		"-d",
+	)
 }
 
 func composeStop(ctx context.Context, run *generatedRun) error {

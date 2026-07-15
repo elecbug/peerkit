@@ -6,6 +6,7 @@ type Scenario struct {
 	Version    int              `yaml:"version" json:"version"`
 	Protocol   string           `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 	Experiment ExperimentConfig `yaml:"experiment" json:"experiment"`
+	Deployment DeploymentConfig `yaml:"deployment,omitempty" json:"deployment,omitempty"`
 	Controller ControllerConfig `yaml:"controller,omitempty" json:"controller,omitempty"`
 	Metrics    MetricsConfig    `yaml:"metrics,omitempty" json:"metrics,omitempty"`
 	Defaults   DefaultsConfig   `yaml:"defaults,omitempty" json:"defaults,omitempty"`
@@ -20,6 +21,10 @@ type ExperimentConfig struct {
 	DurationMS      int64  `yaml:"duration_ms" json:"duration_ms"`
 	WarmupMS        int64  `yaml:"warmup_ms" json:"warmup_ms"`
 	ControlBasePort int    `yaml:"control_base_port" json:"control_base_port"`
+}
+
+type DeploymentConfig struct {
+	ComposeParallelism int `yaml:"compose_parallelism,omitempty" json:"compose_parallelism,omitempty"`
 }
 
 type ControllerConfig struct {

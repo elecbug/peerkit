@@ -48,7 +48,7 @@ func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generat
 			return run, nil, err
 		}
 	}
-	if err := composeUp(ctx, run); err != nil {
+	if err := composeUp(ctx, run, scenario.Deployment.ComposeParallelism); err != nil {
 		return run, nil, err
 	}
 	if !options.Keep {

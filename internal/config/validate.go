@@ -26,6 +26,9 @@ func (s *Scenario) Validate() error {
 	if s.Experiment.ControlBasePort < 1024 || s.Experiment.ControlBasePort+len(s.Topology.Nodes) > 65535 {
 		return fmt.Errorf("control port range is invalid")
 	}
+	if s.Deployment.ComposeParallelism <= 0 {
+		return fmt.Errorf("deployment.compose_parallelism must be positive")
+	}
 	if s.Controller.Parallelism <= 0 {
 		return fmt.Errorf("controller.parallelism must be positive")
 	}
