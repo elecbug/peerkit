@@ -14,7 +14,7 @@ It creates one Docker container per peer, restricts libp2p connections to the co
 - Deterministic topology and random traffic-source generation from `experiment.seed`
 - One libp2p host per container
 - Strict neighbor allow-list through `ConnectionGater`
-- Eager-push flooding with duplicate suppression
+- Eager-push flooding with processing-window duplicate-neighbor suppression
 - Node processing delay and worker pool
 - Per-directed-edge transmission queue
 - Application-level propagation delay, loss, and bandwidth emulation
@@ -22,7 +22,7 @@ It creates one Docker container per peer, restricts libp2p connections to the co
 - Fixed or uniformly random per-message propagation sources
 - Per-message result aggregation
 
-Dynamic topology, churn, GossipSub, Kademlia, mDNS, NAT traversal, and multi-host deployment are intentionally excluded from v0.2.1.
+Dynamic topology, churn, GossipSub, Kademlia, mDNS, NAT traversal, and multi-host deployment are intentionally excluded from v0.2.2.
 
 ## Requirements
 
@@ -325,9 +325,28 @@ Per-edge overrides:
     queue_capacity: 128
 ```
 
-`bandwidth_mbps: 0` disables serialization-delay emulation. Bandwidth is modeled from `payload_size_bytes`; the dummy payload itself is not transmitted over libp2p in v0.2.1.
+`bandwidth_mbps: 0` disables serialization-delay emulation. Bandwidth is modeled from `payload_size_bytes`; the dummy payload itself is not transmitted over libp2p in v0.2.2.
 
-### Traffic
+### Duplicate-neighbor suppression
+
+By default, a node records every neighbor that delivers the same message while
+the first copy is still queued or being processed. At the processing-completion
+cutoff, those neighbors are removed from the forwarding fan-out because they
+already possess the message.
+
+```yaml
+forwarding:
+  suppress_duplicate_neighbors: true
+```
+
+Set the value to `false` to reproduce the previous naive eager-push baseline,
+which skips only the neighbor that supplied the first copy. Suppressed outbound
+operations are written as `message_suppressed` events and aggregated into the
+`suppressions` column of `messages.csv` and `total_suppressions` in
+`summary.json`. Duplicates arriving after processing completes are still counted
+but cannot cancel forwarding that has already been decided.
+
+## Traffic
 
 ```yaml
 traffic:
@@ -368,9 +387,10 @@ Important raw event types:
 - `message_received`
 - `message_processed`
 - `message_sent`
+- `message_suppressed`
 - `message_dropped`
 
-`summary.json` reports average reachability, average completion delay, transmissions, duplicates, and drops.
+`summary.json` reports average reachability, average completion delay, transmissions, duplicates, drops, and effective forwarding suppressions.
 
 ## Modeling boundary
 

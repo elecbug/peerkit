@@ -24,6 +24,10 @@ func (s *Scenario) ApplyDefaults() {
 
 	applyNodeDefaults(&s.Defaults.Node)
 	applyEdgeDefaults(&s.Defaults.Edge)
+	if s.Forwarding.SuppressDuplicateNeighbors == nil {
+		enabled := true
+		s.Forwarding.SuppressDuplicateNeighbors = &enabled
+	}
 
 	for i := range s.Topology.Nodes {
 		if s.Topology.Nodes[i].Performance == nil {

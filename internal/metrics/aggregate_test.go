@@ -19,6 +19,7 @@ func TestAggregate(t *testing.T) {
 		{TimestampNS: 2_000_000, Type: "message_sent", Node: "n0", MessageID: "m1", Origin: "n0"},
 		{TimestampNS: 4_000_000, Type: "message_received", Node: "n1", MessageID: "m1", Origin: "n0"},
 		{TimestampNS: 5_000_000, Type: "message_received", Node: "n1", MessageID: "m1", Origin: "n0", Duplicate: true},
+		{TimestampNS: 5_500_000, Type: "message_suppressed", Node: "n1", MessageID: "m1", Origin: "n0", To: "n2"},
 	}
 	for _, event := range events {
 		if err := encoder.Encode(event); err != nil {
@@ -33,7 +34,7 @@ func TestAggregate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if summary.Messages != 1 || summary.AverageReachability != 1 || summary.TotalDuplicates != 1 {
+	if summary.Messages != 1 || summary.AverageReachability != 1 || summary.TotalDuplicates != 1 || summary.TotalSuppressions != 1 {
 		t.Fatalf("unexpected summary: %+v", summary)
 	}
 }

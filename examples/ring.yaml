@@ -1,7 +1,7 @@
 version: 1
 
 experiment:
-  name: edge-demo
+  name: ring-demo
   seed: 42
   duration_ms: 8000
   warmup_ms: 500

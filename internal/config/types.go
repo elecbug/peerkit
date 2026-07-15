@@ -6,6 +6,7 @@ type Scenario struct {
 	Version    int              `yaml:"version" json:"version"`
 	Experiment ExperimentConfig `yaml:"experiment" json:"experiment"`
 	Defaults   DefaultsConfig   `yaml:"defaults,omitempty" json:"defaults,omitempty"`
+	Forwarding ForwardingConfig `yaml:"forwarding,omitempty" json:"forwarding,omitempty"`
 	Domain     *DomainConfig    `yaml:"domain,omitempty" json:"domain,omitempty"`
 	Topology   TopologyConfig   `yaml:"topology,omitempty" json:"topology,omitempty"`
 	Traffic    []TrafficConfig  `yaml:"traffic" json:"traffic"`
@@ -22,6 +23,17 @@ type ExperimentConfig struct {
 type DefaultsConfig struct {
 	Node NodePerformance `yaml:"node" json:"node"`
 	Edge EdgeNetwork     `yaml:"edge" json:"edge"`
+}
+
+// ForwardingConfig controls application-level eager-push behavior. A pointer is
+// used so an omitted value can default to true while an explicit false remains
+// available for baseline experiments.
+type ForwardingConfig struct {
+	SuppressDuplicateNeighbors *bool `yaml:"suppress_duplicate_neighbors,omitempty" json:"suppress_duplicate_neighbors,omitempty"`
+}
+
+func (f ForwardingConfig) SuppressionEnabled() bool {
+	return f.SuppressDuplicateNeighbors != nil && *f.SuppressDuplicateNeighbors
 }
 
 // DomainConfig defines a generated experiment domain. It is expanded into the
@@ -113,17 +125,18 @@ type ResolvedEdgeNetwork struct {
 }
 
 type RuntimeNodeConfig struct {
-	RunID          string                  `yaml:"run_id" json:"run_id"`
-	ExperimentName string                  `yaml:"experiment_name" json:"experiment_name"`
-	NodeID         string                  `yaml:"node_id" json:"node_id"`
-	NodeIndex      int                     `yaml:"node_index" json:"node_index"`
-	Seed           int64                   `yaml:"seed" json:"seed"`
-	PrivateKey     string                  `yaml:"private_key" json:"private_key"`
-	ListenAddress  string                  `yaml:"listen_address" json:"listen_address"`
-	ControlAddress string                  `yaml:"control_address" json:"control_address"`
-	ResultFile     string                  `yaml:"result_file" json:"result_file"`
-	Performance    NodePerformance         `yaml:"performance" json:"performance"`
-	Neighbors      []RuntimeNeighborConfig `yaml:"neighbors" json:"neighbors"`
+	RunID                      string                  `yaml:"run_id" json:"run_id"`
+	ExperimentName             string                  `yaml:"experiment_name" json:"experiment_name"`
+	NodeID                     string                  `yaml:"node_id" json:"node_id"`
+	NodeIndex                  int                     `yaml:"node_index" json:"node_index"`
+	Seed                       int64                   `yaml:"seed" json:"seed"`
+	PrivateKey                 string                  `yaml:"private_key" json:"private_key"`
+	ListenAddress              string                  `yaml:"listen_address" json:"listen_address"`
+	ControlAddress             string                  `yaml:"control_address" json:"control_address"`
+	ResultFile                 string                  `yaml:"result_file" json:"result_file"`
+	Performance                NodePerformance         `yaml:"performance" json:"performance"`
+	SuppressDuplicateNeighbors bool                    `yaml:"suppress_duplicate_neighbors" json:"suppress_duplicate_neighbors"`
+	Neighbors                  []RuntimeNeighborConfig `yaml:"neighbors" json:"neighbors"`
 }
 
 type RuntimeNeighborConfig struct {

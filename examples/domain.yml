@@ -7,6 +7,11 @@ experiment:
   warmup_ms: 1000
   control_base_port: 18080
 
+# Skip forwarding to neighbors that sent a duplicate while the local node was
+# still waiting or processing the first copy. This is enabled by default.
+forwarding:
+  suppress_duplicate_neighbors: true
+
 # Compact domain declaration. peerkit expands this into explicit nodes and edges
 # before Docker Compose/runtime configuration is generated.
 domain:
@@ -36,7 +41,7 @@ domain:
     memory_limit_mb: 128
 
 traffic:
-  - source: n000
+  - source: random
     start_at_ms: 0
     count: 100
     interval_ms: 50

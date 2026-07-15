@@ -108,8 +108,10 @@ func generateRuntime(scenarioPath string, scenario *config.Scenario, options Run
 			Seed:          scenario.Experiment.Seed + int64(index)*1_000_003,
 			PrivateKey:    identity.privateKey,
 			ListenAddress: "/ip4/0.0.0.0/tcp/4001", ControlAddress: ":8080",
-			ResultFile:  "/results/" + node.ID + ".jsonl",
-			Performance: *node.Performance, Neighbors: neighbors[node.ID],
+			ResultFile:                 "/results/" + node.ID + ".jsonl",
+			Performance:                *node.Performance,
+			SuppressDuplicateNeighbors: scenario.Forwarding.SuppressionEnabled(),
+			Neighbors:                  neighbors[node.ID],
 		}
 		configPath := filepath.Join(configDir, node.ID+".yaml")
 		if err := config.WriteYAML(configPath, runtimeConfig); err != nil {

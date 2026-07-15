@@ -16,7 +16,7 @@ import (
 	"github.com/k-p2plab/peerkit/internal/controller"
 )
 
-const version = "0.2.1"
+const version = "0.2.2"
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
@@ -119,8 +119,8 @@ func runCommand(args []string) {
 	fmt.Printf("messages: %d\n", summary.Messages)
 	fmt.Printf("average reachability: %.6f\n", summary.AverageReachability)
 	fmt.Printf("average completion delay: %.3f ms\n", summary.AverageCompletionDelayMS)
-	fmt.Printf("transmissions: %d, duplicates: %d, drops: %d\n",
-		summary.TotalTransmissions, summary.TotalDuplicates, summary.TotalDrops)
+	fmt.Printf("transmissions: %d, duplicates: %d, drops: %d, suppressions: %d\n",
+		summary.TotalTransmissions, summary.TotalDuplicates, summary.TotalDrops, summary.TotalSuppressions)
 }
 
 func downCommand(args []string) {

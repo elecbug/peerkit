@@ -29,6 +29,7 @@ import (
 	"github.com/k-p2plab/peerkit/internal/config"
 	"github.com/k-p2plab/peerkit/internal/metrics"
 	"github.com/k-p2plab/peerkit/internal/model"
+	"github.com/k-p2plab/peerkit/internal/p2pstate"
 )
 
 const ProtocolID = protocol.ID("/peerkit/eager-push/1.0.0")
@@ -46,7 +47,7 @@ type Peer struct {
 	senders         map[string]*edgeSender
 
 	seenMu sync.Mutex
-	seen   map[string]struct{}
+	seen   map[string]*p2pstate.State
 
 	processQueue chan processItem
 	sequence     atomic.Uint64
@@ -122,7 +123,7 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 		libp2p.DisableRelay(),
 		libp2p.DisableMetrics(),
 		libp2p.Ping(false),
-		libp2p.UserAgent("peerkit/0.2.1"),
+		libp2p.UserAgent("peerkit/0.2.2"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create libp2p host: %w", err)
@@ -139,7 +140,7 @@ func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
 		ctx: peerCtx, cancel: cancel, cfg: cfg, host: h, writer: writer,
 		startedAt: time.Now(), neighborsByNode: neighborsByNode,
 		nodeByPeerID: nodeByPeerID, senders: make(map[string]*edgeSender, len(cfg.Neighbors)),
-		seen:         make(map[string]struct{}),
+		seen:         make(map[string]*p2pstate.State),
 		processQueue: make(chan processItem, cfg.Performance.QueueCapacity),
 	}
 
@@ -301,7 +302,7 @@ func (p *Peer) Inject(count int, interval time.Duration, payloadBytes int) {
 			Hop: 0, PayloadBytes: payloadBytes,
 		}
 		p.seenMu.Lock()
-		p.seen[message.ID] = struct{}{}
+		p.seen[message.ID] = p2pstate.New("")
 		p.seenMu.Unlock()
 		p.record(metrics.Event{
 			Type: "message_created", MessageID: message.ID, Origin: message.Origin,
@@ -335,12 +336,16 @@ func (p *Peer) handleStream(stream network.Stream) {
 func (p *Peer) acceptMessage(message WireMessage, from string) {
 	now := time.Now()
 	p.seenMu.Lock()
-	_, duplicate := p.seen[message.ID]
+	state, duplicate := p.seen[message.ID]
 	if !duplicate {
-		p.seen[message.ID] = struct{}{}
+		state = p2pstate.New(from)
+		p.seen[message.ID] = state
 	}
 	p.seenMu.Unlock()
 
+	if duplicate && p.cfg.SuppressDuplicateNeighbors {
+		state.Observe(from)
+	}
 	p.record(metrics.Event{
 		Type: "message_received", MessageID: message.ID, Origin: message.Origin,
 		From: from, Sequence: message.Sequence, Hop: message.Hop,
@@ -350,6 +355,16 @@ func (p *Peer) acceptMessage(message WireMessage, from string) {
 		return
 	}
 	p.enqueueProcessing(processItem{message: message, from: from, enqueuedAt: now})
+}
+
+func (p *Peer) finishMessageProcessing(messageID string) map[string]struct{} {
+	p.seenMu.Lock()
+	state := p.seen[messageID]
+	p.seenMu.Unlock()
+	if state == nil {
+		return nil
+	}
+	return state.FinishProcessing()
 }
 
 func (p *Peer) enqueueProcessing(item processItem) {
@@ -377,6 +392,7 @@ func (p *Peer) runWorker(ctx context.Context, workerIndex int) {
 			if !sleepContext(ctx, processingDelay) {
 				return
 			}
+			suppressed := p.finishMessageProcessing(item.message.ID)
 			p.record(metrics.Event{
 				Type: "message_processed", MessageID: item.message.ID, Origin: item.message.Origin,
 				From: item.from, Sequence: item.message.Sequence, Hop: item.message.Hop,
@@ -384,8 +400,19 @@ func (p *Peer) runWorker(ctx context.Context, workerIndex int) {
 				ProcessingNS: processingDelay.Nanoseconds(),
 			})
 			for nodeID, sender := range p.senders {
+				// The neighbor that supplied the first copy is always omitted.
 				if nodeID == item.from {
 					continue
+				}
+				if p.cfg.SuppressDuplicateNeighbors {
+					if _, alreadyHasMessage := suppressed[nodeID]; alreadyHasMessage {
+						p.record(metrics.Event{
+							Type: "message_suppressed", MessageID: item.message.ID, Origin: item.message.Origin,
+							To: nodeID, Sequence: item.message.Sequence, Hop: item.message.Hop + 1,
+							PayloadBytes: item.message.PayloadBytes, Reason: "duplicate_neighbor",
+						})
+						continue
+					}
 				}
 				forward := item.message
 				forward.Hop++
