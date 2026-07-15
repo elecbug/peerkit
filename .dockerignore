@@ -1,0 +1,6 @@
+.git
+.gitignore
+.peerkit
+bin
+*.zip
+*.log
