@@ -25,7 +25,7 @@ func generateSwarmRuntime(scenarioPath string, scenario *config.Scenario, option
 	if len(namePart) > 24 {
 		namePart = namePart[:24]
 	}
-	projectName := fmt.Sprintf("peerkit-%s-%d", namePart, now.UnixNano())
+	projectName := fmt.Sprintf("peerkit-%s-%s", namePart, now.Format("060102T150405Z"))
 
 	runDir := options.OutputDir
 	if runDir == "" {
