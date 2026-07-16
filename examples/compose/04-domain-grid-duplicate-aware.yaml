@@ -2,11 +2,15 @@ version: 1
 protocol: duplicate_aware_flooding
 
 experiment:
-  name: duplicate-aware-grid
+  name: compose-grid-duplicate-aware
   seed: 42
   duration_ms: 12000
   warmup_ms: 1000
   control_base_port: 18080
+
+deployment:
+  mode: compose
+  compose_parallelism: 4
 
 domain:
   n: 169
@@ -19,13 +23,14 @@ domain:
   node:
     processing_delay: "normal(mean=100ms, stddev=25ms)"
     workers: 2
-    queue_capacity: 2048
+    queue_capacity: 512
     overflow_policy: drop_new
   edge:
     delay: "exponential(mean=30ms)"
     loss_rate: 0.0
     bandwidth_mbps: 100
-    queue_capacity: 2048
+    queue_capacity: 64
+
 traffic:
   - source: random
     start_at_ms: 0

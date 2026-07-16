@@ -16,8 +16,15 @@ import (
 )
 
 func waitSwarmRun(ctx context.Context, controllerURL string) (*SwarmRunStatus, error) {
+	return waitSwarmRunInterval(ctx, controllerURL, 500*time.Millisecond)
+}
+
+func waitSwarmRunInterval(ctx context.Context, controllerURL string, pollInterval time.Duration) (*SwarmRunStatus, error) {
+	if pollInterval <= 0 {
+		pollInterval = 500 * time.Millisecond
+	}
 	client := &http.Client{Timeout: 15 * time.Second}
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 	var lastStatus SwarmRunStatus
 	lastLoggedState := ""

@@ -46,7 +46,7 @@ func TestPushableImageReference(t *testing.T) {
 	if isPushableImageReference("peerkit-peer:dev") {
 		t.Fatal("unqualified local image must not be considered pushable")
 	}
-	if !isPushableImageReference("registry.local:5000/peerkit/peerkit:0.6.0") {
+	if !isPushableImageReference("registry.local:5000/peerkit/peerkit:0.7.0") {
 		t.Fatal("registry-qualified image should be pushable")
 	}
 }

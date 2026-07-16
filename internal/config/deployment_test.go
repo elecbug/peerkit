@@ -45,3 +45,36 @@ func TestSwarmRejectsHeterogeneousContainerLimits(t *testing.T) {
 		t.Fatal("expected heterogeneous resource limits to fail")
 	}
 }
+
+func TestSwarmConstraintFallback(t *testing.T) {
+	swarm := SwarmConfig{PlacementConstraints: []string{"node.labels.peerkit == true"}}
+	if got := swarm.EffectiveControllerConstraints(); len(got) != 1 || got[0] != "node.labels.peerkit == true" {
+		t.Fatalf("unexpected controller constraints: %v", got)
+	}
+	if got := swarm.EffectivePeerConstraints(); len(got) != 1 || got[0] != "node.labels.peerkit == true" {
+		t.Fatalf("unexpected peer constraints: %v", got)
+	}
+}
+
+func TestSwarmSeparateConstraintsOverrideLegacyFallback(t *testing.T) {
+	swarm := SwarmConfig{
+		ControllerConstraints: []string{"node.role == manager"},
+		PeerConstraints:       []string{"node.labels.peerkit == true"},
+	}
+	if got := swarm.EffectiveControllerConstraints(); len(got) != 1 || got[0] != "node.role == manager" {
+		t.Fatalf("unexpected controller constraints: %v", got)
+	}
+	if got := swarm.EffectivePeerConstraints(); len(got) != 1 || got[0] != "node.labels.peerkit == true" {
+		t.Fatalf("unexpected peer constraints: %v", got)
+	}
+}
+
+func TestSwarmNetworkAttachableDefaultsTrue(t *testing.T) {
+	if !(SwarmConfig{}).NetworkAttachable() {
+		t.Fatal("expected attachable network by default")
+	}
+	value := false
+	if (SwarmConfig{Network: SwarmNetworkConfig{Attachable: &value}}).NetworkAttachable() {
+		t.Fatal("expected explicit attachable=false")
+	}
+}

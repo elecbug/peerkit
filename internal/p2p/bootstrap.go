@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -59,7 +60,7 @@ func BootstrapRuntime(ctx context.Context, controllerURL string, slot int) (*con
 		return nil, fmt.Errorf("derive swarm peer id: %w", err)
 	}
 
-	localIP, err := discoverControllerRouteIP(ctx, controllerURL)
+	localIP, err := discoverSwarmTaskIP(ctx, controllerURL, os.Getenv("PEERKIT_OVERLAY_CIDR"))
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +81,41 @@ func BootstrapRuntime(ctx context.Context, controllerURL string, slot int) (*con
 	}
 	cfg.PrivateKey = base64.StdEncoding.EncodeToString(privateKeyBytes)
 	return cfg, nil
+}
+
+func discoverSwarmTaskIP(ctx context.Context, controllerURL, overlayCIDR string) (net.IP, error) {
+	overlayCIDR = strings.TrimSpace(overlayCIDR)
+	if overlayCIDR == "" {
+		return discoverControllerRouteIP(ctx, controllerURL)
+	}
+	_, network, err := net.ParseCIDR(overlayCIDR)
+	if err != nil {
+		return nil, fmt.Errorf("parse PEERKIT_OVERLAY_CIDR %q: %w", overlayCIDR, err)
+	}
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, fmt.Errorf("list network interfaces: %w", err)
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, address := range addresses {
+			ip, _, err := net.ParseCIDR(address.String())
+			if err != nil {
+				continue
+			}
+			ip = ip.To4()
+			if ip != nil && network.Contains(ip) {
+				return ip, nil
+			}
+		}
+	}
+	return nil, fmt.Errorf("no local IPv4 address belongs to overlay subnet %s", overlayCIDR)
 }
 
 func discoverControllerRouteIP(ctx context.Context, controllerURL string) (net.IP, error) {

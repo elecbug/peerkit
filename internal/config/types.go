@@ -30,13 +30,22 @@ type DeploymentConfig struct {
 }
 
 type SwarmConfig struct {
-	PushImage              *bool    `yaml:"push_image,omitempty" json:"push_image,omitempty"`
-	WithRegistryAuth       *bool    `yaml:"with_registry_auth,omitempty" json:"with_registry_auth,omitempty"`
-	StartupTimeoutSeconds  int      `yaml:"startup_timeout_seconds,omitempty" json:"startup_timeout_seconds,omitempty"`
-	StartupBatchSize       int      `yaml:"startup_batch_size,omitempty" json:"startup_batch_size,omitempty"`
-	StartupBatchIntervalMS int      `yaml:"startup_batch_interval_ms,omitempty" json:"startup_batch_interval_ms,omitempty"`
-	PlacementConstraints   []string `yaml:"placement_constraints,omitempty" json:"placement_constraints,omitempty"`
-	MaxReplicasPerNode     int      `yaml:"max_replicas_per_node,omitempty" json:"max_replicas_per_node,omitempty"`
+	PushImage              *bool              `yaml:"push_image,omitempty" json:"push_image,omitempty"`
+	WithRegistryAuth       *bool              `yaml:"with_registry_auth,omitempty" json:"with_registry_auth,omitempty"`
+	StartupTimeoutSeconds  int                `yaml:"startup_timeout_seconds,omitempty" json:"startup_timeout_seconds,omitempty"`
+	StartupBatchSize       int                `yaml:"startup_batch_size,omitempty" json:"startup_batch_size,omitempty"`
+	StartupBatchIntervalMS int                `yaml:"startup_batch_interval_ms,omitempty" json:"startup_batch_interval_ms,omitempty"`
+	ControllerConstraints  []string           `yaml:"controller_constraints,omitempty" json:"controller_constraints,omitempty"`
+	PeerConstraints        []string           `yaml:"peer_constraints,omitempty" json:"peer_constraints,omitempty"`
+	PlacementConstraints   []string           `yaml:"placement_constraints,omitempty" json:"placement_constraints,omitempty"`
+	MaxReplicasPerNode     int                `yaml:"max_replicas_per_node,omitempty" json:"max_replicas_per_node,omitempty"`
+	Network                SwarmNetworkConfig `yaml:"network,omitempty" json:"network,omitempty"`
+}
+
+type SwarmNetworkConfig struct {
+	Subnet     string `yaml:"subnet,omitempty" json:"subnet,omitempty"`
+	Gateway    string `yaml:"gateway,omitempty" json:"gateway,omitempty"`
+	Attachable *bool  `yaml:"attachable,omitempty" json:"attachable,omitempty"`
 }
 
 func (d DeploymentConfig) IsSwarm() bool {
@@ -49,6 +58,24 @@ func (s SwarmConfig) PushImageEnabled() bool {
 
 func (s SwarmConfig) WithRegistryAuthEnabled() bool {
 	return s.WithRegistryAuth != nil && *s.WithRegistryAuth
+}
+
+func (s SwarmConfig) NetworkAttachable() bool {
+	return s.Network.Attachable == nil || *s.Network.Attachable
+}
+
+func (s SwarmConfig) EffectiveControllerConstraints() []string {
+	if len(s.ControllerConstraints) > 0 {
+		return s.ControllerConstraints
+	}
+	return s.PlacementConstraints
+}
+
+func (s SwarmConfig) EffectivePeerConstraints() []string {
+	if len(s.PeerConstraints) > 0 {
+		return s.PeerConstraints
+	}
+	return s.PlacementConstraints
 }
 
 type ControllerConfig struct {

@@ -6,6 +6,7 @@ type RunOptions struct {
 	Image               string
 	NoBuild             bool
 	Keep                bool
+	Detach              bool
 	ReadyTimeoutSeconds int
 }
 

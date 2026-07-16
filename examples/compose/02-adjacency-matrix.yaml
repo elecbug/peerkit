@@ -2,27 +2,27 @@ version: 1
 protocol: base_flooding
 
 experiment:
-  name: matrix-demo
+  name: compose-adjacency-matrix
   seed: 7
   duration_ms: 5000
   warmup_ms: 500
+  control_base_port: 18080
+
+deployment:
+  mode: compose
+  compose_parallelism: 4
 
 defaults:
   node:
-    processing_delay:
-      distribution: constant
-      value_ms: 20
+    processing_delay: "constant(20ms)"
     workers: 2
-    queue_capacity: 512
+    queue_capacity: 256
     overflow_policy: drop_new
-
   edge:
-    delay:
-      distribution: constant
-      value_ms: 40
+    delay: "constant(40ms)"
     loss_rate: 0.01
     bandwidth_mbps: 20
-    queue_capacity: 512
+    queue_capacity: 64
 
 topology:
   directed: false
@@ -32,7 +32,6 @@ topology:
     - id: p2
     - id: p3
     - id: p4
-
   matrix:
     - [0, 1, 1, 0, 0]
     - [1, 0, 0, 1, 0]

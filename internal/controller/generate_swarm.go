@@ -54,9 +54,9 @@ func generateSwarmRuntime(scenarioPath string, scenario *config.Scenario, option
 		_ = os.WriteFile(filepath.Join(absoluteRunDir, "scenario.yaml"), data, 0o644)
 	}
 
-	placement := map[string]any{}
-	if len(scenario.Deployment.Swarm.PlacementConstraints) > 0 {
-		placement["constraints"] = scenario.Deployment.Swarm.PlacementConstraints
+	peerPlacement := map[string]any{}
+	if constraints := scenario.Deployment.Swarm.EffectivePeerConstraints(); len(constraints) > 0 {
+		peerPlacement["constraints"] = constraints
 	}
 
 	peerDeploy := map[string]any{
@@ -67,8 +67,8 @@ func generateSwarmRuntime(scenarioPath string, scenario *config.Scenario, option
 			"condition": "none",
 		},
 	}
-	if len(placement) > 0 {
-		peerDeploy["placement"] = placement
+	if len(peerPlacement) > 0 {
+		peerDeploy["placement"] = peerPlacement
 	}
 	if resources := uniformPeerResources(scenario); len(resources) > 0 {
 		peerDeploy["resources"] = map[string]any{"limits": resources}
@@ -94,9 +94,9 @@ func generateSwarmRuntime(scenarioPath string, scenario *config.Scenario, option
 			"condition": "none",
 		},
 	}
-	if len(scenario.Deployment.Swarm.PlacementConstraints) > 0 {
+	if constraints := scenario.Deployment.Swarm.EffectiveControllerConstraints(); len(constraints) > 0 {
 		controllerDeploy["placement"] = map[string]any{
-			"constraints": scenario.Deployment.Swarm.PlacementConstraints,
+			"constraints": constraints,
 		}
 	}
 
@@ -129,27 +129,14 @@ func generateSwarmRuntime(scenarioPath string, scenario *config.Scenario, option
 				"command": []string{
 					"-bootstrap-controller", "http://controller:8080",
 				},
-				"environment": map[string]any{
-					"PEERKIT_TASK_SLOT": "{{.Task.Slot}}",
-				},
-				"networks": []string{"peerkit"},
-				"deploy":   peerDeploy,
+				"environment": swarmPeerEnvironment(scenario),
+				"networks":    []string{"peerkit"},
+				"deploy":      peerDeploy,
 			},
 		},
 		"configs": stackConfigs,
 		"networks": map[string]any{
-			"peerkit": map[string]any{
-				"driver":     "overlay",
-				"attachable": true,
-				"ipam": map[string]any{
-					"driver": "default",
-					"config": []any{
-						map[string]any{
-							"subnet": "10.200.0.0/16",
-						},
-					},
-				},
-			},
+			"peerkit": swarmNetworkDefinition(scenario.Deployment.Swarm),
 		},
 	}
 	stackFile := filepath.Join(absoluteRunDir, "stack.yaml")
@@ -192,4 +179,32 @@ func uniformPeerResources(scenario *config.Scenario) map[string]any {
 		values["memory"] = fmt.Sprintf("%dM", resource.MemoryLimitMB)
 	}
 	return values
+}
+
+func swarmPeerEnvironment(scenario *config.Scenario) map[string]any {
+	values := map[string]any{
+		"PEERKIT_TASK_SLOT": "{{.Task.Slot}}",
+	}
+	if subnet := strings.TrimSpace(scenario.Deployment.Swarm.Network.Subnet); subnet != "" {
+		values["PEERKIT_OVERLAY_CIDR"] = subnet
+	}
+	return values
+}
+
+func swarmNetworkDefinition(swarm config.SwarmConfig) map[string]any {
+	network := map[string]any{
+		"driver":     "overlay",
+		"attachable": swarm.NetworkAttachable(),
+	}
+	if subnet := strings.TrimSpace(swarm.Network.Subnet); subnet != "" {
+		entry := map[string]any{"subnet": subnet}
+		if gateway := strings.TrimSpace(swarm.Network.Gateway); gateway != "" {
+			entry["gateway"] = gateway
+		}
+		network["ipam"] = map[string]any{
+			"driver": "default",
+			"config": []any{entry},
+		}
+	}
+	return network
 }

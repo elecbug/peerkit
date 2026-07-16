@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"strings"
 
@@ -18,7 +19,7 @@ func (s *Scenario) Validate() error {
 		return fmt.Errorf("unsupported scenario version %d", s.Version)
 	}
 	if s.Topology.Directed {
-		return fmt.Errorf("directed topology is not supported in peerkit v0.6")
+		return fmt.Errorf("directed topology is not supported in peerkit v0.7")
 	}
 	if len(s.Topology.Nodes) == 0 {
 		return fmt.Errorf("topology.nodes must not be empty")
@@ -46,6 +47,24 @@ func (s *Scenario) Validate() error {
 		}
 		if s.Deployment.Swarm.MaxReplicasPerNode < 0 {
 			return fmt.Errorf("deployment.swarm.max_replicas_per_node must be non-negative")
+		}
+		if len(s.Deployment.Swarm.PlacementConstraints) > 0 &&
+			(len(s.Deployment.Swarm.ControllerConstraints) > 0 || len(s.Deployment.Swarm.PeerConstraints) > 0) {
+			return fmt.Errorf("deployment.swarm.placement_constraints is a legacy shared setting and cannot be combined with controller_constraints or peer_constraints")
+		}
+		if subnet := strings.TrimSpace(s.Deployment.Swarm.Network.Subnet); subnet != "" {
+			_, network, err := net.ParseCIDR(subnet)
+			if err != nil {
+				return fmt.Errorf("deployment.swarm.network.subnet: %w", err)
+			}
+			if gateway := strings.TrimSpace(s.Deployment.Swarm.Network.Gateway); gateway != "" {
+				ip := net.ParseIP(gateway)
+				if ip == nil || !network.Contains(ip) {
+					return fmt.Errorf("deployment.swarm.network.gateway must be an IP inside %s", subnet)
+				}
+			}
+		} else if strings.TrimSpace(s.Deployment.Swarm.Network.Gateway) != "" {
+			return fmt.Errorf("deployment.swarm.network.gateway requires network.subnet")
 		}
 	default:
 		return fmt.Errorf("unsupported deployment.mode %q; expected compose or swarm", s.Deployment.Mode)
@@ -152,7 +171,7 @@ func validateNodePerformance(p NodePerformance) error {
 		return fmt.Errorf("queue_capacity must be positive")
 	}
 	if p.OverflowPolicy != "drop_new" {
-		return fmt.Errorf("unsupported overflow_policy %q; peerkit v0.6 supports drop_new", p.OverflowPolicy)
+		return fmt.Errorf("unsupported overflow_policy %q; peerkit v0.7 supports drop_new", p.OverflowPolicy)
 	}
 	return validateDistribution(p.ProcessingDelay)
 }

@@ -46,7 +46,7 @@ func newControlClient(parallelism int) *controlClient {
 func endpointsFromPorts(ports map[string]int) controlEndpoints {
 	values := make(controlEndpoints, len(ports))
 	for node, port := range ports {
-		values[node] = fmt.Sprintf("http://0.0.0.0:%d", port)
+		values[node] = fmt.Sprintf("http://127.0.0.1:%d", port)
 	}
 	return values
 }

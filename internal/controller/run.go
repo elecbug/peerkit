@@ -17,6 +17,9 @@ func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generat
 	if err != nil {
 		return nil, nil, err
 	}
+	if options.Detach && !scenario.Deployment.IsSwarm() {
+		return nil, nil, fmt.Errorf("--detach is supported only for deployment.mode=swarm")
+	}
 	if options.ProjectRoot == "" {
 		options.ProjectRoot, err = os.Getwd()
 		if err != nil {
@@ -54,9 +57,6 @@ func runCompose(
 	run *generatedRun,
 	options RunOptions,
 ) (*metrics.RunSummary, error) {
-	if !scenario.Deployment.Swarm.PushImageEnabled() && !options.NoBuild {
-		log.Printf("warning: push_image=false builds %s only on the manager; preload the same image on every eligible Swarm node", options.Image)
-	}
 	if !options.NoBuild {
 		log.Printf("building %s", options.Image)
 		if err := buildPeerImage(ctx, options.ProjectRoot, options.Image); err != nil {
@@ -132,12 +132,16 @@ func runSwarm(
 	if err := stackDeploy(ctx, run, scenario.Deployment.Swarm, len(scenario.Topology.Nodes)); err != nil {
 		return nil, err
 	}
+	if options.Detach {
+		log.Printf("Swarm run detached; use peerkit status and peerkit collect with %s", run.RunDir)
+		return nil, nil
+	}
 	if !options.Keep {
 		defer func() {
-			downCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			downCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 			defer cancel()
-			if err := stackRemove(downCtx, run.ProjectName, run.RunDir); err != nil {
-				log.Printf("stack remove: %v", err)
+			if err := RemoveDeployment(downCtx, run.RunDir); err != nil {
+				log.Printf("Swarm cleanup: %v", err)
 			}
 		}()
 	}
@@ -157,7 +161,8 @@ func runSwarm(
 	}
 
 	downloadCtx, cancelDownload := context.WithTimeout(ctx, 10*time.Minute)
-	if err := downloadSwarmArchive(downloadCtx, run.ControllerURL, run.ResultDir); err != nil {
+	archivePath := filepath.Join(run.RunDir, "peerkit-results.tar.gz")
+	if err := downloadAndExtractSwarmArchive(downloadCtx, run.ControllerURL, archivePath, run.ResultDir); err != nil {
 		cancelDownload()
 		return nil, err
 	}
@@ -166,19 +171,7 @@ func runSwarm(
 }
 
 func Down(ctx context.Context, runDir string) error {
-	metadataPath := filepath.Join(runDir, "run.yaml")
-	data, err := os.ReadFile(metadataPath)
-	if err != nil {
-		return fmt.Errorf("read run metadata: %w", err)
-	}
-	var metadata RunMetadata
-	if err := yamlUnmarshal(data, &metadata); err != nil {
-		return err
-	}
-	if metadata.DeploymentMode == "swarm" || metadata.StackFile != "" {
-		return stackRemove(ctx, metadata.ProjectName, runDir)
-	}
-	return composeDown(ctx, metadata.ProjectName, metadata.ComposeFile, runDir)
+	return RemoveDeployment(ctx, runDir)
 }
 
 func sleepContext(ctx context.Context, duration time.Duration) bool {
