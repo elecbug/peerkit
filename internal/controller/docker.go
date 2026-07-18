@@ -65,17 +65,42 @@ func composeDown(ctx context.Context, projectName, composeFile, workDir string) 
 		"docker", "compose", "-p", projectName, "-f", composeFile, "down", "--remove-orphans")
 }
 
-func stackDeploy(ctx context.Context, run *generatedRun, swarm config.SwarmConfig, peerCount int) error {
+func stackDeploy(
+	ctx context.Context,
+	run *generatedRun,
+	swarm config.SwarmConfig,
+	peerCount int,
+) error {
 	args := []string{"stack", "deploy", "--prune"}
+
 	if swarm.WithRegistryAuthEnabled() {
 		args = append(args, "--with-registry-auth")
 	}
+
 	args = append(args, "-c", run.StackFile, run.ProjectName)
-	if err := runCommand(ctx, run.RunDir, os.Stdout, os.Stderr, "docker", args...); err != nil {
+
+	if err := runCommand(
+		ctx,
+		run.RunDir,
+		os.Stdout,
+		os.Stderr,
+		"docker",
+		args...,
+	); err != nil {
 		return err
 	}
 
 	peerService := run.ProjectName + "_peers"
+
+	if err := waitServiceExists(
+		ctx,
+		run.RunDir,
+		peerService,
+		30*time.Second,
+	); err != nil {
+		return err
+	}
+
 	if swarm.MaxReplicasPerNode > 0 {
 		if err := runCommand(
 			ctx,
@@ -85,11 +110,16 @@ func stackDeploy(ctx context.Context, run *generatedRun, swarm config.SwarmConfi
 			"docker",
 			"service",
 			"update",
+			"--detach",
 			"--replicas-max-per-node",
 			strconv.Itoa(swarm.MaxReplicasPerNode),
 			peerService,
 		); err != nil {
-			return err
+			return fmt.Errorf(
+				"set max replicas per node for %s: %w",
+				peerService,
+				err,
+			)
 		}
 	}
 
@@ -98,6 +128,7 @@ func stackDeploy(ctx context.Context, run *generatedRun, swarm config.SwarmConfi
 		time.Duration(swarm.StartupTimeoutSeconds)*time.Second,
 	)
 	defer cancel()
+
 	return scaleServiceStaged(
 		startupCtx,
 		run.RunDir,
@@ -106,6 +137,48 @@ func stackDeploy(ctx context.Context, run *generatedRun, swarm config.SwarmConfi
 		swarm.StartupBatchSize,
 		time.Duration(swarm.StartupBatchIntervalMS)*time.Millisecond,
 	)
+}
+
+func waitServiceExists(
+	ctx context.Context,
+	workDir string,
+	serviceName string,
+	timeout time.Duration,
+) error {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		_, err := commandOutput(
+			waitCtx,
+			workDir,
+			"docker",
+			"service",
+			"inspect",
+			serviceName,
+			"--format",
+			"{{.ID}}",
+		)
+
+		if err == nil {
+			return nil
+		}
+
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf(
+				"Swarm service %s was not created within %s: %w",
+				serviceName,
+				timeout,
+				waitCtx.Err(),
+			)
+
+		case <-ticker.C:
+		}
+	}
 }
 
 func scaleServiceStaged(
@@ -119,14 +192,16 @@ func scaleServiceStaged(
 	if total < 0 {
 		return fmt.Errorf("peer replica count must be non-negative")
 	}
+
 	if total == 0 {
 		return nil
 	}
+
 	if batchSize <= 0 {
 		return fmt.Errorf("startup batch size must be positive")
 	}
 
-	for target := min(batchSize, total); target <= total; {
+	for target := min(batchSize, total); ; {
 		log.Printf(
 			"scaling Swarm peer service: target=%d total=%d",
 			target,
@@ -140,8 +215,11 @@ func scaleServiceStaged(
 			os.Stderr,
 			"docker",
 			"service",
-			"scale",
-			fmt.Sprintf("%s=%d", serviceName, target),
+			"update",
+			"--detach",
+			"--replicas",
+			strconv.Itoa(target),
+			serviceName,
 		); err != nil {
 			return fmt.Errorf(
 				"scale Swarm service %s to %d: %w",
@@ -174,15 +252,8 @@ func scaleServiceStaged(
 			return ctx.Err()
 		}
 
-		next := target + batchSize
-		if next > total {
-			next = total
-		}
-
-		target = next
+		target = min(target+batchSize, total)
 	}
-
-	return nil
 }
 
 func waitServiceReplicas(
@@ -218,7 +289,7 @@ func waitServiceReplicas(
 				lastDesired = desired
 			}
 
-			if running == expected && desired == expected {
+			if desired == expected && running >= expected {
 				return nil
 			}
 		} else if err.Error() != lastErrText {
@@ -287,7 +358,7 @@ func serviceReplicaStatus(
 	workDir string,
 	serviceName string,
 ) (int, int, error) {
-	output, err := commandOutput(
+	desiredOutput, err := commandOutput(
 		ctx,
 		workDir,
 		"docker",
@@ -295,41 +366,64 @@ func serviceReplicaStatus(
 		"inspect",
 		serviceName,
 		"--format",
-		"{{.ServiceStatus.RunningTasks}} {{.ServiceStatus.DesiredTasks}}",
+		"{{if .Spec.Mode.Replicated}}{{.Spec.Mode.Replicated.Replicas}}{{else}}-1{{end}}",
 	)
 	if err != nil {
 		return 0, 0, fmt.Errorf(
-			"inspect Swarm service %s: %w",
+			"inspect desired replicas for %s: %w",
 			serviceName,
 			err,
 		)
 	}
 
-	fields := strings.Fields(strings.TrimSpace(output))
-	if len(fields) != 2 {
+	desiredText := strings.TrimSpace(desiredOutput)
+
+	desired, err := strconv.Atoi(desiredText)
+	if err != nil {
 		return 0, 0, fmt.Errorf(
-			"unexpected Swarm replica status for %s: %q",
+			"parse desired replica count %q for %s: %w",
+			desiredText,
 			serviceName,
-			strings.TrimSpace(output),
-		)
-	}
-
-	running, err := strconv.Atoi(fields[0])
-	if err != nil {
-		return 0, 0, fmt.Errorf(
-			"parse running task count %q: %w",
-			fields[0],
 			err,
 		)
 	}
 
-	desired, err := strconv.Atoi(fields[1])
+	if desired < 0 {
+		return 0, 0, fmt.Errorf(
+			"Swarm service %s is not a replicated service",
+			serviceName,
+		)
+	}
+
+	taskOutput, err := commandOutput(
+		ctx,
+		workDir,
+		"docker",
+		"service",
+		"ps",
+		serviceName,
+		"--filter",
+		"desired-state=running",
+		"--format",
+		"{{.CurrentState}}",
+	)
 	if err != nil {
 		return 0, 0, fmt.Errorf(
-			"parse desired task count %q: %w",
-			fields[1],
+			"inspect running tasks for %s: %w",
+			serviceName,
 			err,
 		)
+	}
+
+	running := 0
+
+	for _, line := range strings.Split(taskOutput, "\n") {
+		state := strings.TrimSpace(line)
+
+		if strings.HasPrefix(state, "Running ") ||
+			state == "Running" {
+			running++
+		}
 	}
 
 	return running, desired, nil
