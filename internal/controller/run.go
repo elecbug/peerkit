@@ -129,8 +129,20 @@ func runSwarm(
 	}
 
 	log.Printf("deploying Swarm stack %s with %d peer tasks", run.ProjectName, len(scenario.Topology.Nodes))
-	if err := stackDeploy(ctx, run, scenario.Deployment.Swarm, len(scenario.Topology.Nodes)); err != nil {
-		return nil, err
+	if err := stackDeploy(
+		ctx,
+		run,
+		scenario.Deployment.Swarm,
+		len(scenario.Topology.Nodes),
+		scenario.Experiment.ControlBasePort,
+	); err != nil {
+		diagnosticCtx, cancelDiagnostics := context.WithTimeout(context.Background(), 30*time.Second)
+		diagnosticErr := SaveRunDiagnostics(diagnosticCtx, run.RunDir)
+		cancelDiagnostics()
+		if diagnosticErr != nil {
+			return nil, fmt.Errorf("Swarm deployment failed: %w; additionally failed to save diagnostics: %v", err, diagnosticErr)
+		}
+		return nil, fmt.Errorf("Swarm deployment failed: %w; diagnostics saved to %s", err, filepath.Join(run.RunDir, "diagnostics"))
 	}
 	if options.Detach {
 		log.Printf("Swarm run detached; use peerkit status and peerkit collect with %s", run.RunDir)

@@ -59,6 +59,9 @@ func generateSwarmRuntime(scenarioPath string, scenario *config.Scenario, option
 	if constraints := scenario.Deployment.Swarm.EffectivePeerConstraints(); len(constraints) > 0 {
 		peerPlacement["constraints"] = constraints
 	}
+	if maximum := scenario.Deployment.Swarm.MaxReplicasPerNode; maximum > 0 {
+		peerPlacement["max_replicas_per_node"] = maximum
+	}
 
 	peerDeploy := map[string]any{
 		"mode":          "replicated",
@@ -92,7 +95,10 @@ func generateSwarmRuntime(scenarioPath string, scenario *config.Scenario, option
 	controllerDeploy := map[string]any{
 		"replicas": 1,
 		"restart_policy": map[string]any{
-			"condition": "none",
+			"condition":    "on-failure",
+			"delay":        "2s",
+			"max_attempts": 3,
+			"window":       "30s",
 		},
 	}
 	if constraints := scenario.Deployment.Swarm.EffectiveControllerConstraints(); len(constraints) > 0 {
