@@ -1,3 +1,9 @@
-/bin/
-/.peerkit/
+bin/*
+.peerkit/*
+exp/*
+log/*
+logs/*
+
 *.log
+
+!exp/run.sh
