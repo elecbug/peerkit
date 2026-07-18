@@ -4,6 +4,7 @@ exp/*
 log/*
 logs/*
 batch-logs/*
+results/
 
 venv/*
 
