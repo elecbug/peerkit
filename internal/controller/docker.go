@@ -126,8 +126,13 @@ func scaleServiceStaged(
 		return fmt.Errorf("startup batch size must be positive")
 	}
 
-	for target := min(batchSize, total); ; target = min(target+batchSize, total) {
-		log.Printf("scaling Swarm peer service to %d/%d replicas", target, total)
+	for target := min(batchSize, total); target <= total; {
+		log.Printf(
+			"scaling Swarm peer service: target=%d total=%d",
+			target,
+			total,
+		)
+
 		if err := runCommand(
 			ctx,
 			workDir,
@@ -138,75 +143,196 @@ func scaleServiceStaged(
 			"scale",
 			fmt.Sprintf("%s=%d", serviceName, target),
 		); err != nil {
+			return fmt.Errorf(
+				"scale Swarm service %s to %d: %w",
+				serviceName,
+				target,
+				err,
+			)
+		}
+
+		if err := waitServiceReplicas(
+			ctx,
+			workDir,
+			serviceName,
+			target,
+		); err != nil {
 			return err
 		}
-		if err := waitServiceReplicas(ctx, workDir, serviceName, target); err != nil {
-			return err
-		}
+
+		log.Printf(
+			"Swarm peer batch ready: %d/%d",
+			target,
+			total,
+		)
+
 		if target == total {
 			return nil
 		}
+
 		if !sleepContext(ctx, batchInterval) {
 			return ctx.Err()
 		}
+
+		next := target + batchSize
+		if next > total {
+			next = total
+		}
+
+		target = next
 	}
+
+	return nil
 }
 
-func waitServiceReplicas(ctx context.Context, workDir, serviceName string, expected int) error {
-	ticker := time.NewTicker(500 * time.Millisecond)
+func waitServiceReplicas(
+	ctx context.Context,
+	workDir string,
+	serviceName string,
+	expected int,
+) error {
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+
+	lastRunning := -1
+	lastDesired := -1
+	lastErrText := ""
+
 	for {
-		running, desired, err := serviceReplicaStatus(ctx, workDir, serviceName)
-		if err == nil && running >= expected && desired == expected {
-			return nil
+		running, desired, err := serviceReplicaStatus(
+			ctx,
+			workDir,
+			serviceName,
+		)
+
+		if err == nil {
+			if running != lastRunning || desired != lastDesired {
+				log.Printf(
+					"waiting for Swarm peer tasks: running=%d desired=%d target=%d",
+					running,
+					desired,
+					expected,
+				)
+
+				lastRunning = running
+				lastDesired = desired
+			}
+
+			if running == expected && desired == expected {
+				return nil
+			}
+		} else if err.Error() != lastErrText {
+			log.Printf(
+				"unable to read Swarm service status: %v",
+				err,
+			)
+			lastErrText = err.Error()
 		}
+
 		select {
 		case <-ctx.Done():
+			diagnostics, diagnosticsErr := swarmServiceDiagnostics(
+				context.Background(),
+				workDir,
+				serviceName,
+			)
+			if diagnosticsErr != nil {
+				diagnostics = fmt.Sprintf(
+					"failed to collect task diagnostics: %v",
+					diagnosticsErr,
+				)
+			}
+
 			return fmt.Errorf(
-				"Swarm service %s did not reach %d replicas (last status %d/%d): %w",
+				"Swarm service %s did not reach %d replicas; "+
+					"last status=%d/%d: %w\n%s",
 				serviceName,
 				expected,
-				running,
-				desired,
+				lastRunning,
+				lastDesired,
 				ctx.Err(),
+				diagnostics,
 			)
+
 		case <-ticker.C:
 		}
 	}
 }
 
-func serviceReplicaStatus(ctx context.Context, workDir, serviceName string) (int, int, error) {
+func swarmServiceDiagnostics(
+	ctx context.Context,
+	workDir string,
+	serviceName string,
+) (string, error) {
 	output, err := commandOutput(
 		ctx,
 		workDir,
 		"docker",
 		"service",
-		"ls",
-		"--filter",
-		"name="+serviceName,
+		"ps",
+		serviceName,
+		"--no-trunc",
 		"--format",
-		"{{.Name}} {{.Replicas}}",
+		"{{.Name}}\t{{.Node}}\t{{.DesiredState}}\t{{.CurrentState}}\t{{.Error}}",
 	)
 	if err != nil {
-		return 0, 0, err
+		return "", err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 || fields[0] != serviceName {
-			continue
-		}
-		parts := strings.SplitN(fields[1], "/", 2)
-		if len(parts) != 2 {
-			return 0, 0, fmt.Errorf("unexpected replica status %q", fields[1])
-		}
-		running, runningErr := strconv.Atoi(parts[0])
-		desired, desiredErr := strconv.Atoi(parts[1])
-		if runningErr != nil || desiredErr != nil {
-			return 0, 0, fmt.Errorf("unexpected replica status %q", fields[1])
-		}
-		return running, desired, nil
+
+	return strings.TrimSpace(output), nil
+}
+
+func serviceReplicaStatus(
+	ctx context.Context,
+	workDir string,
+	serviceName string,
+) (int, int, error) {
+	output, err := commandOutput(
+		ctx,
+		workDir,
+		"docker",
+		"service",
+		"inspect",
+		serviceName,
+		"--format",
+		"{{.ServiceStatus.RunningTasks}} {{.ServiceStatus.DesiredTasks}}",
+	)
+	if err != nil {
+		return 0, 0, fmt.Errorf(
+			"inspect Swarm service %s: %w",
+			serviceName,
+			err,
+		)
 	}
-	return 0, 0, fmt.Errorf("Swarm service %s was not found", serviceName)
+
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf(
+			"unexpected Swarm replica status for %s: %q",
+			serviceName,
+			strings.TrimSpace(output),
+		)
+	}
+
+	running, err := strconv.Atoi(fields[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf(
+			"parse running task count %q: %w",
+			fields[0],
+			err,
+		)
+	}
+
+	desired, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf(
+			"parse desired task count %q: %w",
+			fields[1],
+			err,
+		)
+	}
+
+	return running, desired, nil
 }
 
 func stackRemove(ctx context.Context, projectName, workDir string) error {
