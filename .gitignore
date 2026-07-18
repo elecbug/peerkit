@@ -5,6 +5,8 @@ log/*
 logs/*
 batch-logs/*
 
+venv/*
+
 *.log
 
 !exp/run.sh
