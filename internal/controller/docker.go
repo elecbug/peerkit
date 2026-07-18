@@ -413,8 +413,6 @@ func activeTaskFailure(ctx context.Context, workDir, serviceName string) (string
 		"service",
 		"ps",
 		serviceName,
-		"--filter",
-		"desired-state=running",
 		"--no-trunc",
 		"--format",
 		"{{.Name}}\t{{.CurrentState}}\t{{.Error}}",

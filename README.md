@@ -532,3 +532,46 @@ make check
 ```
 
 Runtime operations should still be performed through `bin/peerkit`; the Makefile does not duplicate the user-facing command surface.
+
+
+## Runtime inspection and recent-run state
+
+Every generated run is recorded immediately in:
+
+```text
+bin/.peerkit-last-run
+```
+
+The file contains the absolute path of the most recently generated run directory. It is written before Docker deployment begins, so it is available while a long-running experiment is still active.
+
+```bash
+# Diagnose the latest run
+peerkit inspect
+
+# Diagnose a specific run
+peerkit inspect .peerkit/runs/260718/er-base-flooding-t184228
+
+# JSON output
+peerkit inspect --json
+
+# Stop the latest run without copying its path
+peerkit stop
+
+# Stop a specific run
+peerkit stop .peerkit/runs/260718/er-base-flooding-t184228
+```
+
+`peerkit inspect` checks the Swarm control plane, node readiness, Controller and peer replicas, all task states, failed or unassigned tasks, overlay IPAM capacity, Docker subnet overlap, scenario configs, Controller HTTP state, and published-port conflicts.
+
+A synchronous Swarm run now performs this lifecycle automatically unless `--keep` is specified:
+
+```text
+completed
+→ download and validate result archive
+→ extract results
+→ remove services
+→ remove stack overlay networks
+→ remove scenario configs
+```
+
+A detached run still requires `peerkit collect` because the launching process exits intentionally.

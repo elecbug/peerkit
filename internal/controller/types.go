@@ -8,6 +8,7 @@ type RunOptions struct {
 	Keep                bool
 	Detach              bool
 	ReadyTimeoutSeconds int
+	OnGenerated         func(runDir string) error
 }
 
 type RunMetadata struct {

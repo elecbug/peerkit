@@ -115,16 +115,31 @@ func (a App) logs(args []string) error {
 func (a App) stop(args []string) error {
 	flags := newFlagSet("stop", a.Stderr)
 	timeout := flags.Int("timeout", 180, "cleanup timeout in seconds")
+	projectRoot := flags.String("project-root", ".", "peerkit project root containing bin/.peerkit-last-run")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 1 {
-		return fmt.Errorf("usage: peerkit stop [--timeout seconds] <run-directory>")
+	if flags.NArg() > 1 {
+		return fmt.Errorf("usage: peerkit stop [--timeout seconds] [run-directory]")
+	}
+	runDir := ""
+	if flags.NArg() == 1 {
+		runDir = flags.Arg(0)
+	} else {
+		var err error
+		runDir, err = loadRecentRun(*projectRoot)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(a.Stdout, "using recent run: %s\n", runDir)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*timeout)*time.Second)
 	defer cancel()
-	if err := controller.RemoveDeployment(ctx, flags.Arg(0)); err != nil {
+	if err := controller.RemoveDeployment(ctx, runDir); err != nil {
 		return err
+	}
+	if err := clearRecentRunIfMatches(*projectRoot, runDir); err != nil {
+		fmt.Fprintf(a.Stderr, "warning: could not clear recent-run state: %v\n", err)
 	}
 	fmt.Fprintln(a.Stdout, "deployment removed")
 	return nil

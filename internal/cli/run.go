@@ -33,6 +33,9 @@ func (a App) runExperiment(args []string) error {
 		Keep:                *keep,
 		Detach:              *detach,
 		ReadyTimeoutSeconds: *readyTimeout,
+		OnGenerated: func(runDir string) error {
+			return saveRecentRun(*projectRoot, runDir)
+		},
 	})
 	if err != nil {
 		if run != nil {

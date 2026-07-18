@@ -42,6 +42,11 @@ func Run(ctx context.Context, scenarioPath string, options RunOptions) (*generat
 		return nil, nil, err
 	}
 	log.Printf("run directory: %s", run.RunDir)
+	if options.OnGenerated != nil {
+		if err := options.OnGenerated(run.RunDir); err != nil {
+			log.Printf("warning: could not record generated run: %v", err)
+		}
+	}
 
 	if scenario.Deployment.IsSwarm() {
 		summary, err := runSwarm(ctx, scenario, run, options)
@@ -148,11 +153,19 @@ func runSwarm(
 		log.Printf("Swarm run detached; use peerkit status and peerkit collect with %s", run.RunDir)
 		return nil, nil
 	}
-	if !options.Keep {
+
+	cleanupPending := !options.Keep
+	cleanup := func() error {
+		downCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		return RemoveDeployment(downCtx, run.RunDir)
+	}
+	if cleanupPending {
 		defer func() {
-			downCtx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-			defer cancel()
-			if err := RemoveDeployment(downCtx, run.RunDir); err != nil {
+			if !cleanupPending {
+				return
+			}
+			if err := cleanup(); err != nil {
 				log.Printf("Swarm cleanup: %v", err)
 			}
 		}()
@@ -172,6 +185,7 @@ func runSwarm(
 		return nil, fmt.Errorf("swarm controller completed without a summary")
 	}
 
+	log.Printf("Swarm run completed; downloading and validating result archive before cleanup")
 	downloadCtx, cancelDownload := context.WithTimeout(ctx, 10*time.Minute)
 	archivePath := filepath.Join(run.RunDir, "peerkit-results.tar.gz")
 	if err := downloadAndExtractSwarmArchive(downloadCtx, run.ControllerURL, archivePath, run.ResultDir); err != nil {
@@ -179,6 +193,15 @@ func runSwarm(
 		return nil, err
 	}
 	cancelDownload()
+
+	if cleanupPending {
+		log.Printf("Swarm run completed and results were collected; removing services, networks, and configs")
+		if err := cleanup(); err != nil {
+			return status.Summary, fmt.Errorf("results were saved, but automatic Swarm cleanup failed: %w", err)
+		}
+		cleanupPending = false
+		log.Printf("Swarm deployment removed")
+	}
 	return status.Summary, nil
 }
 

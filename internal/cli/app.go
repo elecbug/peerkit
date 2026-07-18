@@ -10,7 +10,7 @@ import (
 	"syscall"
 )
 
-const Version = "0.7.0"
+const Version = "0.8.0"
 
 type App struct {
 	Stdout io.Writer
@@ -49,6 +49,8 @@ func (a App) run(args []string) error {
 		return a.runExperiment(args[1:])
 	case "status":
 		return a.status(args[1:])
+	case "inspect":
+		return a.inspect(args[1:])
 	case "collect":
 		return a.collect(args[1:])
 	case "logs":
@@ -89,10 +91,11 @@ Experiment commands:
   validate <scenario.yaml>              Validate and resolve a scenario
   expand [-o file] <scenario.yaml>      Write the explicit resolved topology
   run [options] <scenario.yaml>         Build, deploy, execute, collect, and clean up
-  status [options] <run-directory>      Show Compose or Swarm run status
+  status [options] <run-directory>      Show Controller and runtime status
+  inspect [options] [run-directory]     Diagnose services, tasks, networks, ports, and Swarm health
   collect [options] <run-directory>     Resume Swarm collection and clean up
   logs [options] <run-directory>        Show Controller or peer logs
-  stop <run-directory>                  Remove services, containers, and networks
+  stop [run-directory]                  Remove a run; defaults to bin/.peerkit-last-run
   diagnose <run-directory>              Save runtime diagnostics
 
 Environment commands:
@@ -106,5 +109,7 @@ Typical workflows:
   peerkit run examples/compose/03-domain-er-base.yaml
   peerkit run --detach --image registry.local:5000/peerkit:dev examples/swarm/02-multi-node-registry.yaml
   peerkit status .peerkit/runs/<run>
+  peerkit inspect                       # inspect the most recent run
+  peerkit stop                          # stop the most recent run
   peerkit collect .peerkit/runs/<run>`)
 }
