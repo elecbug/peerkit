@@ -47,7 +47,8 @@ func generateComposeRuntime(scenarioPath string, scenario *config.Scenario, opti
 	if len(namePart) > 24 {
 		namePart = namePart[:24]
 	}
-	projectName := fmt.Sprintf("peerkit-%s-%s", namePart, now.Format("060102T150405Z"))
+
+	projectName := fmt.Sprintf("%s/%s-%s", now.Format("060102"), namePart, now.Format("T150405"))
 
 	runDir := options.OutputDir
 	if runDir == "" {
