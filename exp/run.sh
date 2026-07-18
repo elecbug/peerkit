@@ -34,14 +34,15 @@ TOTAL=$((${#SCENARIOS[@]} * REPEAT))
 CURRENT=0
 FAILURES=0
 
-for SCENARIO in "${SCENARIOS[@]}"; do
-    NAME=$(basename "$SCENARIO")
-    NAME="${NAME%.*}"
-
-    mkdir -p "$LOG_ROOT/$NAME"
-
-    for RUN_INDEX in $(seq 1 "$REPEAT"); do
+for RUN_INDEX in $(seq 1 "$REPEAT"); do
+    for SCENARIO in "${SCENARIOS[@]}"; do
         CURRENT=$((CURRENT + 1))
+
+        NAME=$(basename "$SCENARIO")
+        NAME="${NAME%.*}"
+
+        mkdir -p "$LOG_ROOT/$NAME"
+
         LOG_FILE=$(printf \
             '%s/%s/run-%02d.log' \
             "$LOG_ROOT" \
