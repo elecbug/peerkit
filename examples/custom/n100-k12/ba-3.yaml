@@ -1,0 +1,68 @@
+version: 1
+protocol: idontwant_flooding
+
+experiment:
+  name: ba-idontwant-flooding
+  seed: 42
+  duration_ms: 12000
+  warmup_ms: 1000
+  control_base_port: 18080
+
+deployment:
+  mode: swarm
+
+  swarm:
+    push_image: true
+    with_registry_auth: true
+
+    startup_timeout_seconds: 3600
+    startup_batch_size: 100
+    startup_batch_interval_ms: 1000
+
+    max_replicas_per_node: 1000
+
+    network:
+      subnet: 10.200.0.0/16
+      attachable: true
+
+controller:
+  parallelism: 32
+  operation_timeout_seconds: 600
+
+metrics:
+  buffer_bytes: 262144
+  queue_capacity: 512
+  flush_interval_ms: 200
+
+domain:
+  n: 100
+  id_prefix: n
+  zero_padding: 3
+
+  topology:
+    model: ba
+    m: 6
+    ensure_connected: true
+
+  node:
+    processing_delay: "normal(mean=100ms, stddev=25ms)"
+    workers: 2
+    queue_capacity: 512
+    overflow_policy: drop_new
+
+  edge:
+    delay: "exponential(mean=30ms)"
+    loss_rate: 0.005
+    bandwidth_mbps: 100
+    queue_capacity: 64
+
+  resources:
+    cpu_limit: 0.20
+    memory_limit_mb: 128
+
+traffic:
+  - source: random
+    start_at_ms: 0
+    count: 100
+    interval_ms: 75
+    payload_size_bytes: 1024
