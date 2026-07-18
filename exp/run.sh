@@ -70,6 +70,10 @@ for RUN_INDEX in $(seq 1 "$REPEAT"); do
 
             echo "FAILED: $SCENARIO run $RUN_INDEX, exit=$STATUS" |
                 tee -a "$LOG_FILE"
+
+            sudo ./bin/peerkit stop \
+            "$SCENARIO" \
+            2>&1 | tee "$LOG_FILE"
         fi
     done
 done

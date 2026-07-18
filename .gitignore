@@ -3,6 +3,7 @@ bin/*
 exp/*
 log/*
 logs/*
+batch-logs/*
 
 *.log
 
