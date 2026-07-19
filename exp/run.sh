@@ -3,7 +3,7 @@ set -uo pipefail
 
 IMAGE="localhost:5000/peerkit-peer:dev"
 EXP_DIR=$1
-REPEAT=10
+REPEAT=$2
 LOG_ROOT="batch-logs/$(date '+%Y%m%d-%H%M%S')"
 
 mkdir -p "$LOG_ROOT"
