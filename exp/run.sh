@@ -5,7 +5,7 @@ IMAGE="localhost:5000/peerkit-peer:dev"
 
 EXP_DIR="${1:?Usage: $0 <experiment-dir> <repeat> [keyword-file]}"
 REPEAT="${2:?Usage: $0 <experiment-dir> <repeat> [keyword-file]}"
-KEYWORD_FILE="${3:-.KEYWORD}"
+KEYWORD_FILE="${3:-KEYWORD}"
 
 LOG_ROOT="batch-logs/$(date '+%Y%m%d-%H%M%S')"
 
