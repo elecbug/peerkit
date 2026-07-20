@@ -58,6 +58,7 @@ for RUN_INDEX in $(seq 1 "$REPEAT"); do
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "============================================================"
 
+        echo "Refresh resources"
         sudo systemctl restart docker
 
         if sudo ./bin/peerkit run \
