@@ -75,6 +75,8 @@ for RUN_INDEX in $(seq 1 "$REPEAT"); do
             "$SCENARIO" \
             2>&1 | tee "$LOG_FILE"
         fi
+
+        sudo systemctl restart docker
     done
 done
 
