@@ -58,6 +58,8 @@ for RUN_INDEX in $(seq 1 "$REPEAT"); do
         echo "Started: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "============================================================"
 
+        sudo systemctl restart docker
+
         if sudo ./bin/peerkit run \
             --image "$IMAGE" \
             "$SCENARIO" \
@@ -75,8 +77,6 @@ for RUN_INDEX in $(seq 1 "$REPEAT"); do
             "$SCENARIO" \
             2>&1 | tee "$LOG_FILE"
         fi
-
-        sudo systemctl restart docker
     done
 done
 
