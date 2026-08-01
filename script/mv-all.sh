@@ -9,23 +9,24 @@ set -euo pipefail
 #
 # and moves them into:
 #
-#   nas/results/<EXP_NAME>/
+#   nas/<CATEGORY_DIR>/result/<EXP_NAME>/
 #
 # Usage:
-#   ./script/mv-all.sh <EXP_NAME>
+#   ./script/mv-all.sh <CATEGORY_DIR> <EXP_NAME>
 
-if [[ $# -ne 1 ]]; then
-    echo "Usage: $0 <EXP_NAME>" >&2
+if [[ $# -ne 2 ]]; then
+    echo "Usage: $0 <CATEGORY_DIR> <EXP_NAME>" >&2
     exit 1
 fi
 
-EXP_NAME="$1"
+CATEGORY_DIR="$1"
+EXP_NAME="$2"
 
 # Use the current working directory as the project root.
 PROJECT_ROOT="$(pwd)"
 
 RUNS_DIR="$PROJECT_ROOT/.peerkit/runs"
-DEST_DIR="$PROJECT_ROOT/nas/results/$EXP_NAME"
+DEST_DIR="$PROJECT_ROOT/nas/$CATEGORY_DIR/result/$EXP_NAME"
 
 # Verify that the script is being executed from the project root.
 if [[ ! -d "$PROJECT_ROOT/script" ]] ||

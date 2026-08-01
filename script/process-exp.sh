@@ -4,27 +4,28 @@ set -euo pipefail
 
 # This script must be executed from the project root directory.
 # Usage:
-#   ./script/process_experiment.sh <EXP_NAME>
+#   ./script/process-exp.sh <CATEGORY_DIR> <EXP_NAME>
 
-if [[ $# -ne 1 ]]; then
-    echo "Usage: $0 <EXP_NAME>" >&2
+if [[ $# -ne 2 ]]; then
+    echo "Usage: $0 <CATEGORY_DIR> <EXP_NAME>" >&2
     exit 1
 fi
 
-EXP_NAME="$1"
+CATEGORY_DIR="$1"
+EXP_NAME="$2"
 
 # Use the current working directory as the project root.
 PROJECT_ROOT="$(pwd)"
 
 VENV_DIR="$PROJECT_ROOT/venv"
 
-RESULT_DIR="$PROJECT_ROOT/nas/results/$EXP_NAME"
+RESULT_DIR="$PROJECT_ROOT/nas/$CATEGORY_DIR/result/$EXP_NAME"
 EXP_DIR="$PROJECT_ROOT/exp/$EXP_NAME"
 OUT_DIR="$EXP_DIR/out"
 SUMMARY_DIR="$OUT_DIR/summary"
 OUT_CSV="$OUT_DIR/out.csv"
 
-NAS_EXP_ROOT="$PROJECT_ROOT/nas/exp"
+NAS_EXP_ROOT="$PROJECT_ROOT/nas/$CATEGORY_DIR/exp"
 NAS_EXP_DIR="$NAS_EXP_ROOT/$EXP_NAME"
 
 SUMMARY_SCRIPT="$PROJECT_ROOT/script/summary.py"
