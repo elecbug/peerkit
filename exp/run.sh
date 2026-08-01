@@ -237,6 +237,8 @@ for RUN_INDEX in $(seq 1 "$REPEAT"); do
                 "$SCENARIO" \
                 2>&1 | tee -a "$LOG_FILE"
         fi
+
+        sleep 10
     done
 done
 
