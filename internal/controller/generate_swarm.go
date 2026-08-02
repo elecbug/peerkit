@@ -26,7 +26,7 @@ func generateSwarmRuntime(scenarioPath string, scenario *config.Scenario, option
 		namePart = namePart[:24]
 	}
 	projDir := fmt.Sprintf("%s", now.Format("060102"))
-	projectName := fmt.Sprintf("%s-t%s", namePart, now.Format("150405"))
+	projectName := fmt.Sprintf("%s-%st%sz", namePart, now.Format("060102"), now.Format("150405"))
 
 	runDir := options.OutputDir
 	if runDir == "" {
