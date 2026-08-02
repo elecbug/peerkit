@@ -9,13 +9,13 @@ set -euo pipefail
 #
 # and moves them into:
 #
-#   nas/<CATEGORY_DIR>/result/<EXP_NAME>/
+#   nas/<CATEGORY_DIR>/result/<NAS_EXP_NAME>/
 #
 # Usage:
-#   ./script/mv-all.sh <CATEGORY_DIR> <EXP_NAME>
+#   ./script/mv-all.sh <CATEGORY_DIR> <NAS_EXP_NAME>
 
 if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 <CATEGORY_DIR> <EXP_NAME>" >&2
+    echo "Usage: $0 <CATEGORY_DIR> <NAS_EXP_NAME>" >&2
     exit 1
 fi
 

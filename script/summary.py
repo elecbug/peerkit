@@ -53,7 +53,7 @@ GROUP_STATISTICS = ("mean", "median", "q1", "q3", "min", "max")
 #                         ^^^^^^^^^^^^^^^^^^^^^^^
 # becomes:
 #   ba-base-flooding
-RUN_DIRECTORY_PATTERN = re.compile(r"^(?P<name>.+)-t[^/]+$")
+RUN_DIRECTORY_PATTERN = re.compile(r"^(?P<name>.+)-\d+t\d+z$")
 
 
 @dataclass(frozen=True)

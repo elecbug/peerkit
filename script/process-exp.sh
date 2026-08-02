@@ -4,29 +4,31 @@ set -euo pipefail
 
 # This script must be executed from the project root directory.
 # Usage:
-#   ./script/process-exp.sh <CATEGORY_DIR> <EXP_NAME>
+#   ./script/process-exp.sh <CATEGORY_DIR> <NAS_EXP_NAME> <PROJECT_EXP_DIR>
 
-if [[ $# -ne 2 ]]; then
-    echo "Usage: $0 <CATEGORY_DIR> <EXP_NAME>" >&2
+if [[ $# -ne 3 ]]; then
+    echo "Usage: $0 <CATEGORY_DIR> <NAS_EXP_NAME> <PROJECT_EXP_DIR>" >&2
     exit 1
 fi
 
 CATEGORY_DIR="$1"
-EXP_NAME="$2"
+NAS_EXP_NAME="$2"
+EXP_NAME="$3"
 
 # Use the current working directory as the project root.
 PROJECT_ROOT="$(pwd)"
 
 VENV_DIR="$PROJECT_ROOT/venv"
 
-RESULT_DIR="$PROJECT_ROOT/nas/$CATEGORY_DIR/result/$EXP_NAME"
+NAS_CATEGORY_ROOT="$PROJECT_ROOT/nas/$CATEGORY_DIR"
+
+NAS_EXP_DIR="$NAS_CATEGORY_ROOT/exp/$NAS_EXP_NAME"
+NAS_RESULT_DIR="$NAS_CATEGORY_ROOT/result/$NAS_EXP_NAME"
+
 EXP_DIR="$PROJECT_ROOT/exp/$EXP_NAME"
 OUT_DIR="$EXP_DIR/out"
-SUMMARY_DIR="$OUT_DIR/summary"
-OUT_CSV="$OUT_DIR/out.csv"
-
-NAS_EXP_ROOT="$PROJECT_ROOT/nas/$CATEGORY_DIR/exp"
-NAS_EXP_DIR="$NAS_EXP_ROOT/$EXP_NAME"
+SUMMARY_DIR="$OUT_DIR/plot"
+OUT_CSV="$OUT_DIR/$NAS_EXP_NAME.out.csv"
 
 SUMMARY_SCRIPT="$PROJECT_ROOT/script/summary.py"
 PLOT_SCRIPT="$PROJECT_ROOT/script/plot_summary.py"
@@ -47,9 +49,9 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 # Verify that the experiment result directory exists.
-if [[ ! -d "$RESULT_DIR" ]]; then
+if [[ ! -d "$NAS_RESULT_DIR" ]]; then
     echo "Error: Experiment result directory does not exist." >&2
-    echo "Path: $RESULT_DIR" >&2
+    echo "Path: $NAS_RESULT_DIR" >&2
     exit 1
 fi
 
@@ -134,7 +136,7 @@ fi
 echo "[INFO] Generating experiment summary: $EXP_NAME"
 
 python3 "$SUMMARY_SCRIPT" \
-    --dir "$RESULT_DIR" \
+    --dir "$NAS_RESULT_DIR" \
     --out "$OUT_CSV"
 
 # Verify that the summary CSV file was generated.
