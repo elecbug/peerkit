@@ -23,12 +23,12 @@ func domainScenario(model DomainTopologyConfig, count int) *Scenario {
 			IDPrefix: "n",
 			Topology: model,
 			Node: &NodePerformance{
-				ProcessingDelay: Distribution{Type: "constant", ValueMS: 1},
-				Workers:         1, QueueCapacity: 16, OverflowPolicy: "drop_new",
+				ProcessingDelayDistribution: Distribution{Type: "constant", ValueMS: 1},
+				Workers:                     1, QueueCapacity: 16, OverflowPolicy: "drop_new",
 			},
 			Edge: &EdgeNetwork{
-				Delay:         Distribution{Type: "constant", ValueMS: 1},
-				QueueCapacity: 16,
+				DelayDistribution: Distribution{Type: "constant", ValueMS: 1},
+				QueueCapacity:     16,
 			},
 		},
 	}
@@ -41,6 +41,9 @@ func resolveDomainForTest(t *testing.T, scenario *Scenario) {
 		t.Fatal(err)
 	}
 	scenario.ApplyDefaults()
+	if err := scenario.ResolveDelayAssignments(); err != nil {
+		t.Fatal(err)
+	}
 	if err := scenario.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -101,32 +104,71 @@ func generatedComponentsFromScenario(scenario *Scenario) [][]int {
 	return generatedComponents(len(scenario.Topology.Nodes), edges)
 }
 
-func TestDomainNormalDelayAssignsPerNodeMeans(t *testing.T) {
+func TestDomainDelayDistributionAssignsPerNodeMeans(t *testing.T) {
 	model := DomainTopologyConfig{Model: "path"}
 	first := domainScenario(model, 12)
-	first.Domain.Node.ProcessingDelay = Distribution{Type: "normal", MeanMS: 100, StdDevMS: 25}
+	first.Domain.Node.ProcessingDelayDistribution = Distribution{Type: "normal", MeanMS: 100, StdDevMS: 25}
+	first.Domain.Node.ProcessingDelayJitterStdDevMS = 8
 	second := domainScenario(model, 12)
-	second.Domain.Node.ProcessingDelay = Distribution{Type: "normal", MeanMS: 100, StdDevMS: 25}
+	second.Domain.Node.ProcessingDelayDistribution = Distribution{Type: "normal", MeanMS: 100, StdDevMS: 25}
+	second.Domain.Node.ProcessingDelayJitterStdDevMS = 8
 
 	resolveDomainForTest(t, first)
 	resolveDomainForTest(t, second)
 
 	means := make(map[float64]struct{})
 	for i, node := range first.Topology.Nodes {
-		got := node.Performance.ProcessingDelay
-		if got.Type != "normal" || got.StdDevMS != 25 {
-			t.Fatalf("node %d delay=%+v; want normal with stddev 25", i, got)
+		got := node.Performance.ProcessingDelayDistribution
+		if got.Type != "constant" {
+			t.Fatalf("node %d delay=%+v; want assigned constant baseline", i, got)
 		}
-		if got.MeanMS < 0 {
-			t.Fatalf("node %d has negative mean %f", i, got.MeanMS)
+		if got.ValueMS < 0 {
+			t.Fatalf("node %d has negative assigned delay %f", i, got.ValueMS)
 		}
-		means[got.MeanMS] = struct{}{}
-		if got != second.Topology.Nodes[i].Performance.ProcessingDelay {
-			t.Fatalf("node %d mean assignment is not deterministic", i)
+		if node.Performance.ProcessingDelayJitterStdDevMS != 8 {
+			t.Fatalf("node %d processing_delay_jitter_stddev=%v; want 8ms", i, node.Performance.ProcessingDelayJitterStdDevMS)
+		}
+		means[got.ValueMS] = struct{}{}
+		if got != second.Topology.Nodes[i].Performance.ProcessingDelayDistribution {
+			t.Fatalf("node %d delay assignment is not deterministic", i)
 		}
 	}
 	if len(means) == 1 {
-		t.Fatal("all generated nodes received the same mean")
+		t.Fatal("all generated nodes received the same assigned delay")
+	}
+}
+
+func TestDomainDelayDistributionAssignsPerEdgeMeans(t *testing.T) {
+	model := DomainTopologyConfig{Model: "path"}
+	first := domainScenario(model, 12)
+	first.Domain.Edge.DelayDistribution = Distribution{Type: "exponential", MeanMS: 30}
+	first.Domain.Edge.DelayJitterStdDevMS = 4
+	second := domainScenario(model, 12)
+	second.Domain.Edge.DelayDistribution = Distribution{Type: "exponential", MeanMS: 30}
+	second.Domain.Edge.DelayJitterStdDevMS = 4
+
+	resolveDomainForTest(t, first)
+	resolveDomainForTest(t, second)
+
+	means := make(map[float64]struct{})
+	for i, edge := range first.Topology.Edges {
+		got := edge.Network.DelayDistribution
+		if got.Type != "constant" {
+			t.Fatalf("edge %d delay=%+v; want assigned constant baseline", i, got)
+		}
+		if got.ValueMS < 0 {
+			t.Fatalf("edge %d has negative assigned delay %f", i, got.ValueMS)
+		}
+		if edge.Network.DelayJitterStdDevMS != 4 {
+			t.Fatalf("edge %d delay_jitter_stddev=%v; want 4ms", i, edge.Network.DelayJitterStdDevMS)
+		}
+		means[got.ValueMS] = struct{}{}
+		if got != second.Topology.Edges[i].Network.DelayDistribution {
+			t.Fatalf("edge %d delay assignment is not deterministic", i)
+		}
+	}
+	if len(means) == 1 {
+		t.Fatal("all generated edges received the same assigned delay")
 	}
 }
 
@@ -134,7 +176,7 @@ func TestDomainNodeMeanSamplingDoesNotChangeTopology(t *testing.T) {
 	model := DomainTopologyConfig{Model: "er", P: floatPointer(0.08), EnsureConnected: true}
 	constant := domainScenario(model, 40)
 	normal := domainScenario(model, 40)
-	normal.Domain.Node.ProcessingDelay = Distribution{Type: "normal", MeanMS: 100, StdDevMS: 25}
+	normal.Domain.Node.ProcessingDelayDistribution = Distribution{Type: "normal", MeanMS: 100, StdDevMS: 25}
 
 	resolveDomainForTest(t, constant)
 	resolveDomainForTest(t, normal)

@@ -52,10 +52,8 @@ func (s *Scenario) ExpandDomain() error {
 	}
 
 	// Domain-level performance settings override top-level defaults while still
-	// inheriting fields omitted by the compact declaration. For a normal
-	// processing-delay declaration, each generated node receives a permanent
-	// mean sampled around the declared mean. The declared standard deviation is
-	// retained as the per-message standard deviation for every node.
+	// inheriting fields omitted by the compact declaration. Per-node and per-edge
+	// baseline delays are assigned after the topology has been fully expanded.
 	var domainNodeTemplate *NodePerformance
 	if domain.Node != nil {
 		resolved := *domain.Node
@@ -70,13 +68,11 @@ func (s *Scenario) ExpandDomain() error {
 	}
 
 	nodes := make([]NodeSpec, nodeCount)
-	nodeRNG := rand.New(rand.NewSource(domainSeed(s.Experiment.Seed, "node-performance")))
 	for i := range nodes {
 		id := fmt.Sprintf("%s%0*d", idPrefix, zeroPadding, i)
 		nodes[i] = NodeSpec{ID: id}
 		if domainNodeTemplate != nil {
 			performance := *domainNodeTemplate
-			performance.ProcessingDelay = resolveDomainNodeDelay(performance.ProcessingDelay, nodeRNG)
 			nodes[i].Performance = &performance
 		}
 		if domain.Resources != nil {
@@ -109,16 +105,6 @@ func (s *Scenario) ExpandDomain() error {
 		Edges:    edges,
 	}
 	return nil
-}
-
-func resolveDomainNodeDelay(distribution Distribution, rng *rand.Rand) Distribution {
-	if strings.EqualFold(distribution.Type, "normal") {
-		distribution.MeanMS += rng.NormFloat64() * distribution.StdDevMS
-		if distribution.MeanMS < 0 {
-			distribution.MeanMS = 0
-		}
-	}
-	return distribution
 }
 
 func domainSeed(base int64, purpose string) int64 {

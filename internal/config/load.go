@@ -31,6 +31,9 @@ func LoadScenario(path string) (*Scenario, error) {
 		return nil, err
 	}
 	scenario.ApplyDefaults()
+	if err := scenario.ResolveDelayAssignments(); err != nil {
+		return nil, err
+	}
 	if err := scenario.Validate(); err != nil {
 		return nil, err
 	}

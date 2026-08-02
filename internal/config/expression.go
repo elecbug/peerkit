@@ -11,6 +11,26 @@ import (
 
 type distributionAlias Distribution
 
+func (d *Milliseconds) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind != yaml.ScalarNode {
+		return fmt.Errorf("duration must be a scalar")
+	}
+	value, err := parseMilliseconds(node.Value)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", node.Value, err)
+	}
+	*d = Milliseconds(value)
+	return nil
+}
+
+func (d Milliseconds) MarshalYAML() (any, error) {
+	return strconv.FormatFloat(float64(d), 'f', -1, 64) + "ms", nil
+}
+
+func (d Milliseconds) IsZero() bool {
+	return d == 0
+}
+
 // UnmarshalYAML accepts both the original mapping form and compact expressions:
 //
 //	normal(mean=100ms, stddev=20ms)

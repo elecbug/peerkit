@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math/rand"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -47,5 +48,34 @@ func TestDistributionYAMLAcceptsExpressionAndMapping(t *testing.T) {
 	}
 	if mapping.Type != "exponential" || mapping.MeanMS != 30 {
 		t.Fatalf("unexpected mapping distribution: %+v", mapping)
+	}
+}
+
+func TestMillisecondsYAMLAcceptsDurationAndNumber(t *testing.T) {
+	var duration Milliseconds
+	if err := duration.UnmarshalYAML(&yaml.Node{Kind: yaml.ScalarNode, Value: "25ms"}); err != nil {
+		t.Fatal(err)
+	}
+	if duration != 25 {
+		t.Fatalf("duration=%v; want 25ms", duration)
+	}
+
+	var numeric Milliseconds
+	if err := numeric.UnmarshalYAML(&yaml.Node{Kind: yaml.ScalarNode, Value: "12.5"}); err != nil {
+		t.Fatal(err)
+	}
+	if numeric != 12.5 {
+		t.Fatalf("numeric=%v; want 12.5ms", numeric)
+	}
+}
+
+func TestNormalDistributionResamplesNegativeDraw(t *testing.T) {
+	// Seed 1 produces a first standard-normal draw below -1. With mean=10ms
+	// and stddev=10ms, that draw is negative and must be rejected.
+	rng := rand.New(rand.NewSource(1))
+	d := Distribution{Type: "normal", MeanMS: 10, StdDevMS: 10}
+	got := d.SampleMilliseconds(rng)
+	if got <= 0 || got >= 10 {
+		t.Fatalf("expected a positive resampled value below 10ms, got %v", got)
 	}
 }

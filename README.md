@@ -366,12 +366,14 @@ domain:
     average_degree: 12
     ensure_connected: true
   node:
-    processing_delay: "normal(mean=100ms, stddev=25ms)"
+    processing_delay_distribution: "normal(mean=100ms, stddev=25ms)"
+    processing_delay_jitter_stddev: 10ms
     workers: 2
     queue_capacity: 512
     overflow_policy: drop_new
   edge:
-    delay: "exponential(mean=30ms)"
+    delay_distribution: "exponential(mean=30ms)"
+    delay_jitter_stddev: 5ms
     loss_rate: 0.005
     bandwidth_mbps: 100
     queue_capacity: 64
@@ -397,15 +399,58 @@ p = average_degree / (n - 1)
 
 This keeps the expected edge count approximately linear in `n`.
 
-### Node heterogeneity
+### Two-level delay model
 
-For a generated domain:
+Delay configuration is split into a population-level distribution and a
+per-entity runtime deviation.
 
 ```yaml
-processing_delay: "normal(mean=100ms, stddev=25ms)"
+node:
+  processing_delay_distribution: "normal(mean=100ms, stddev=25ms)"
+  processing_delay_jitter_stddev: 10ms
 ```
 
-assigns each node a fixed mean sampled around 100 ms while retaining the same 25 ms runtime standard deviation for every node. Use `peerkit expand` to inspect the resolved per-node means.
+`processing_delay_distribution` is sampled once per node. The assigned value
+becomes that node's stable processing-delay mean. Every message processed by the
+node then draws from a normal distribution centered on the assigned mean with a
+standard deviation of `processing_delay_jitter_stddev`.
+
+```yaml
+edge:
+  delay_distribution: "exponential(mean=30ms)"
+  delay_jitter_stddev: 5ms
+```
+
+`delay_distribution` is sampled once per logical edge. An exponential
+population therefore creates many low-delay edges and a small number of
+high-delay edges. Every frame sent across an edge then draws from a normal
+distribution centered on that edge's assigned delay with a standard deviation
+of `delay_jitter_stddev`. For an undirected topology, both directions share the same
+assigned edge mean while drawing independent runtime samples.
+
+Runtime jitter uses a zero-truncated normal distribution: negative draws are
+rejected and resampled rather than clamped to zero. To ensure that jitter stays
+a small perturbation for very low-delay nodes or edges, the effective runtime
+standard deviation is `min(configured_stddev, assigned_mean / 3)`. A zero-delay
+baseline therefore remains zero instead of becoming a half-normal delay.
+
+Use `peerkit expand` to inspect the assigned per-node and per-edge baseline
+delays. The resolved scenario represents each assigned baseline as a
+`constant(...)` distribution.
+
+This is a breaking scenario-schema change:
+
+```text
+processing_delay  -> processing_delay_distribution
+each_delay_std    -> processing_delay_jitter_stddev (node)
+delay              -> delay_distribution
+each_delay_std    -> delay_jitter_stddev (edge)
+```
+
+The standard deviation inside `processing_delay_distribution` or
+`delay_distribution` controls variation **between nodes or edges**. The separate `processing_delay_jitter_stddev` and `delay_jitter_stddev`
+values control variation **between individual operations on the same node or
+edge**.
 
 ## Distribution expressions
 

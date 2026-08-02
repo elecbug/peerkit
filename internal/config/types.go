@@ -2,6 +2,10 @@ package config
 
 const RandomTrafficSource = "random"
 
+// Milliseconds stores a duration in milliseconds. YAML accepts either a
+// duration string such as "25ms" or a unitless numeric millisecond value.
+type Milliseconds float64
+
 type Scenario struct {
 	Version    int              `yaml:"version" json:"version"`
 	Protocol   string           `yaml:"protocol,omitempty" json:"protocol,omitempty"`
@@ -133,10 +137,11 @@ type NodeSpec struct {
 }
 
 type NodePerformance struct {
-	ProcessingDelay Distribution `yaml:"processing_delay" json:"processing_delay"`
-	Workers         int          `yaml:"workers" json:"workers"`
-	QueueCapacity   int          `yaml:"queue_capacity" json:"queue_capacity"`
-	OverflowPolicy  string       `yaml:"overflow_policy" json:"overflow_policy"`
+	ProcessingDelayDistribution   Distribution `yaml:"processing_delay_distribution" json:"processing_delay_distribution"`
+	ProcessingDelayJitterStdDevMS Milliseconds `yaml:"processing_delay_jitter_stddev,omitempty" json:"processing_delay_jitter_stddev,omitempty"`
+	Workers                       int          `yaml:"workers" json:"workers"`
+	QueueCapacity                 int          `yaml:"queue_capacity" json:"queue_capacity"`
+	OverflowPolicy                string       `yaml:"overflow_policy" json:"overflow_policy"`
 }
 
 type ResourceConfig struct {
@@ -151,10 +156,11 @@ type EdgeSpec struct {
 }
 
 type EdgeNetwork struct {
-	Delay         Distribution `yaml:"delay" json:"delay"`
-	LossRate      *float64     `yaml:"loss_rate,omitempty" json:"loss_rate,omitempty"`
-	BandwidthMbps *float64     `yaml:"bandwidth_mbps,omitempty" json:"bandwidth_mbps,omitempty"`
-	QueueCapacity int          `yaml:"queue_capacity" json:"queue_capacity"`
+	DelayDistribution   Distribution `yaml:"delay_distribution" json:"delay_distribution"`
+	DelayJitterStdDevMS Milliseconds `yaml:"delay_jitter_stddev,omitempty" json:"delay_jitter_stddev,omitempty"`
+	LossRate            *float64     `yaml:"loss_rate,omitempty" json:"loss_rate,omitempty"`
+	BandwidthMbps       *float64     `yaml:"bandwidth_mbps,omitempty" json:"bandwidth_mbps,omitempty"`
+	QueueCapacity       int          `yaml:"queue_capacity" json:"queue_capacity"`
 }
 
 type Distribution struct {
@@ -177,10 +183,11 @@ type TrafficConfig struct {
 }
 
 type ResolvedEdgeNetwork struct {
-	Delay         Distribution `yaml:"delay" json:"delay"`
-	LossRate      float64      `yaml:"loss_rate" json:"loss_rate"`
-	BandwidthMbps float64      `yaml:"bandwidth_mbps" json:"bandwidth_mbps"`
-	QueueCapacity int          `yaml:"queue_capacity" json:"queue_capacity"`
+	DelayDistribution   Distribution `yaml:"delay_distribution" json:"delay_distribution"`
+	DelayJitterStdDevMS Milliseconds `yaml:"delay_jitter_stddev,omitempty" json:"delay_jitter_stddev,omitempty"`
+	LossRate            float64      `yaml:"loss_rate" json:"loss_rate"`
+	BandwidthMbps       float64      `yaml:"bandwidth_mbps" json:"bandwidth_mbps"`
+	QueueCapacity       int          `yaml:"queue_capacity" json:"queue_capacity"`
 }
 
 type RuntimeNodeConfig struct {

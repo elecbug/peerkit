@@ -416,7 +416,11 @@ func (p *Peer) runWorker(ctx context.Context, workerIndex int) {
 			return
 		case item := <-p.processQueue:
 			queueWait := time.Since(item.enqueuedAt)
-			processingDelay := model.SampleDuration(p.cfg.Performance.ProcessingDelay, rng)
+			processingDelay := model.SampleAroundAssignedDelay(
+				p.cfg.Performance.ProcessingDelayDistribution,
+				p.cfg.Performance.ProcessingDelayJitterStdDevMS,
+				rng,
+			)
 			if !sleepContext(ctx, processingDelay) {
 				return
 			}
@@ -565,7 +569,11 @@ func (s *edgeSender) send(ctx context.Context, item outboundItem) {
 		return
 	}
 
-	propagationDelay := model.SampleDuration(s.neighbor.Network.Delay, rng)
+	propagationDelay := model.SampleAroundAssignedDelay(
+		s.neighbor.Network.DelayDistribution,
+		s.neighbor.Network.DelayJitterStdDevMS,
+		rng,
+	)
 	serializationDelay := model.SerializationDelay(frame.simulatedBytes(), s.neighbor.Network.BandwidthMbps)
 	if !sleepContext(ctx, propagationDelay+serializationDelay) {
 		return

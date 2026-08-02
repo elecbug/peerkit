@@ -98,8 +98,8 @@ func (s *Scenario) ApplyDefaults() {
 }
 
 func applyNodeDefaults(p *NodePerformance) {
-	if p.ProcessingDelay.Type == "" {
-		p.ProcessingDelay = Distribution{Type: "constant", ValueMS: 0}
+	if p.ProcessingDelayDistribution.Type == "" {
+		p.ProcessingDelayDistribution = Distribution{Type: "constant", ValueMS: 0}
 	}
 	if p.Workers == 0 {
 		p.Workers = 1
@@ -114,8 +114,11 @@ func applyNodeDefaults(p *NodePerformance) {
 }
 
 func mergeNodePerformance(dst *NodePerformance, defaults NodePerformance) {
-	if dst.ProcessingDelay.Type == "" {
-		dst.ProcessingDelay = defaults.ProcessingDelay
+	if dst.ProcessingDelayDistribution.Type == "" {
+		dst.ProcessingDelayDistribution = defaults.ProcessingDelayDistribution
+	}
+	if dst.ProcessingDelayJitterStdDevMS == 0 {
+		dst.ProcessingDelayJitterStdDevMS = defaults.ProcessingDelayJitterStdDevMS
 	}
 	if dst.Workers == 0 {
 		dst.Workers = defaults.Workers
@@ -130,8 +133,8 @@ func mergeNodePerformance(dst *NodePerformance, defaults NodePerformance) {
 }
 
 func applyEdgeDefaults(n *EdgeNetwork) {
-	if n.Delay.Type == "" {
-		n.Delay = Distribution{Type: "constant", ValueMS: 0}
+	if n.DelayDistribution.Type == "" {
+		n.DelayDistribution = Distribution{Type: "constant", ValueMS: 0}
 	}
 	if n.LossRate == nil {
 		v := 0.0
@@ -147,8 +150,11 @@ func applyEdgeDefaults(n *EdgeNetwork) {
 }
 
 func mergeEdgeNetwork(dst *EdgeNetwork, defaults EdgeNetwork) {
-	if dst.Delay.Type == "" {
-		dst.Delay = defaults.Delay
+	if dst.DelayDistribution.Type == "" {
+		dst.DelayDistribution = defaults.DelayDistribution
+	}
+	if dst.DelayJitterStdDevMS == 0 {
+		dst.DelayJitterStdDevMS = defaults.DelayJitterStdDevMS
 	}
 	if dst.LossRate == nil {
 		v := *defaults.LossRate
@@ -174,9 +180,10 @@ func (n EdgeNetwork) Resolve() ResolvedEdgeNetwork {
 		bandwidth = *n.BandwidthMbps
 	}
 	return ResolvedEdgeNetwork{
-		Delay:         n.Delay,
-		LossRate:      loss,
-		BandwidthMbps: bandwidth,
-		QueueCapacity: n.QueueCapacity,
+		DelayDistribution:   n.DelayDistribution,
+		DelayJitterStdDevMS: n.DelayJitterStdDevMS,
+		LossRate:            loss,
+		BandwidthMbps:       bandwidth,
+		QueueCapacity:       n.QueueCapacity,
 	}
 }

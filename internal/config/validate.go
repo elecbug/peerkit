@@ -173,7 +173,10 @@ func validateNodePerformance(p NodePerformance) error {
 	if p.OverflowPolicy != "drop_new" {
 		return fmt.Errorf("unsupported overflow_policy %q; peerkit v0.7 supports drop_new", p.OverflowPolicy)
 	}
-	return validateDistribution(p.ProcessingDelay)
+	if p.ProcessingDelayJitterStdDevMS < 0 {
+		return fmt.Errorf("processing_delay_jitter_stddev must be non-negative")
+	}
+	return validateDistribution(p.ProcessingDelayDistribution)
 }
 
 func validateEdgeNetwork(n ResolvedEdgeNetwork) error {
@@ -186,7 +189,10 @@ func validateEdgeNetwork(n ResolvedEdgeNetwork) error {
 	if n.QueueCapacity <= 0 {
 		return fmt.Errorf("queue_capacity must be positive")
 	}
-	return validateDistribution(n.Delay)
+	if n.DelayJitterStdDevMS < 0 {
+		return fmt.Errorf("delay_jitter_stddev must be non-negative")
+	}
+	return validateDistribution(n.DelayDistribution)
 }
 
 func validateDistribution(d Distribution) error {
