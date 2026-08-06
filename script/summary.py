@@ -51,9 +51,13 @@ GROUP_STATISTICS = ("mean", "median", "q1", "q3", "min", "max")
 # Example:
 #   260718/ba-base-flooding-t105948/results/messages.csv
 #                         ^^^^^^^^^^^^^^^^^^^^^^^
+#   260718/ba-base-flooding-260102t105948/results/messages.csv
+#                         ^^^^^^^^^^^^^^^^^^^^^^^
 # becomes:
 #   ba-base-flooding
-RUN_DIRECTORY_PATTERN = re.compile(r"^(?P<name>.+)-\d+t\d+z$")
+RUN_DIRECTORY_PATTERN = re.compile(
+    r"^(?P<name>.+)-(?:\d+t\d+z|t\d+)$"
+)
 
 
 @dataclass(frozen=True)

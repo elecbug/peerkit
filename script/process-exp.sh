@@ -57,9 +57,11 @@ fi
 
 # Verify that the experiment directory exists.
 if [[ ! -d "$EXP_DIR" ]]; then
-    echo "Error: Experiment directory does not exist." >&2
-    echo "Path: $EXP_DIR" >&2
-    exit 1
+    # echo "Error: Experiment directory does not exist." >&2
+    # echo "Path: $EXP_DIR" >&2
+    # exit 1
+
+    mkdir -p "$EXP_DIR"
 fi
 
 # Verify that the required Python scripts exist.
