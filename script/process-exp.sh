@@ -6,14 +6,14 @@ set -euo pipefail
 # Usage:
 #   ./script/process-exp.sh <CATEGORY_DIR> <NAS_EXP_NAME> <PROJECT_EXP_DIR>
 
-if [[ $# -ne 3 ]]; then
-    echo "Usage: $0 <CATEGORY_DIR> <NAS_EXP_NAME> <PROJECT_EXP_DIR>" >&2
+if [[ $# -ne 2 ]]; then
+    echo "Usage: $0 <CATEGORY_DIR> <EXP_NAME>" >&2
     exit 1
 fi
 
 CATEGORY_DIR="$1"
 NAS_EXP_NAME="$2"
-EXP_NAME="$3"
+EXP_NAME="$CATEGORY_DIR/$NAS_EXP_NAME"
 
 # Use the current working directory as the project root.
 PROJECT_ROOT="$(pwd)"
