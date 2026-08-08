@@ -23,8 +23,6 @@ DEFAULT_METRICS = [
     "control_bytes_sent",
 ]
 
-DEFAULT_STATS = ["mean", "median", "max", "min"]
-
 METRIC_TITLES = {
     "reached_nodes": "Reached Nodes",
     "total_nodes": "Total Nodes",
@@ -40,18 +38,11 @@ METRIC_TITLES = {
     "control_bytes_sent": "Control Bytes Sent",
 }
 
-STAT_LABELS = {
-    "mean": "Mean",
-    "median": "Median",
-    "max": "Max",
-    "min": "Min",
-}
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create line charts from an auto-merged summary CSV. "
+            "Create box plots from an auto-merged summary CSV. "
             "One PNG is generated per metric."
         )
     )
@@ -75,11 +66,6 @@ def parse_args() -> argparse.Namespace:
             "Comma-separated metrics to plot, or 'all'. "
             "Example: completion_delay_ms,transmissions,duplicates"
         ),
-    )
-    parser.add_argument(
-        "--stats",
-        default=",".join(DEFAULT_STATS),
-        help="Comma-separated statistics: mean,median,max,min",
     )
     parser.add_argument(
         "--dpi",
@@ -113,7 +99,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--show-values",
         action="store_true",
-        help="Show numeric values next to points",
+        help="Show summary values next to each box plot",
     )
     return parser.parse_args()
 
@@ -122,27 +108,28 @@ def parse_csv_option(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
-def validate_requested_stats(stats: list[str]) -> None:
-    invalid = [stat for stat in stats if stat not in DEFAULT_STATS]
-    if invalid:
-        raise ValueError(
-            "unsupported statistics: " + ", ".join(invalid)
-            + "; allowed: " + ", ".join(DEFAULT_STATS)
-        )
-
-
 def available_metrics(df: pd.DataFrame) -> list[str]:
     result = []
+
     for metric in DEFAULT_METRICS:
-        if any(f"{metric}_{stat}" in df.columns for stat in DEFAULT_STATS):
+        required = [
+            f"{metric}_mean",
+            f"{metric}_median",
+            f"{metric}_q1",
+            f"{metric}_q3",
+            f"{metric}_min",
+            f"{metric}_max",
+        ]
+
+        if all(column in df.columns for column in required):
             result.append(metric)
+
     return result
 
 
 def plot_metric(
     df: pd.DataFrame,
     metric: str,
-    stats: list[str],
     output_file: Path,
     dpi: int,
     width: float,
@@ -150,71 +137,170 @@ def plot_metric(
     log_scale: bool,
     show_values: bool,
 ) -> None:
-    columns = [f"{metric}_{stat}" for stat in stats]
-    existing = [column for column in columns if column in df.columns]
+    required_columns = {
+        "mean": f"{metric}_mean",
+        "median": f"{metric}_median",
+        "q1": f"{metric}_q1",
+        "q3": f"{metric}_q3",
+        "min": f"{metric}_min",
+        "max": f"{metric}_max",
+    }
 
-    if not existing:
+    missing_columns = [
+        column
+        for column in required_columns.values()
+        if column not in df.columns
+    ]
+
+    if missing_columns:
         print(
-            f"[warning] skipped {metric}: no matching columns",
+            f"[warning] skipped {metric}: missing columns: "
+            + ", ".join(missing_columns),
             file=sys.stderr,
         )
         return
 
-    x_labels = df["file"].astype(str).tolist()
-    x_positions = list(range(len(x_labels)))
+    # Convert all required columns to numeric
+    mean_values = pd.to_numeric(df[required_columns["mean"]], errors="coerce")
+    median_values = pd.to_numeric(df[required_columns["median"]], errors="coerce")
+    q1_values = pd.to_numeric(df[required_columns["q1"]], errors="coerce")
+    q3_values = pd.to_numeric(df[required_columns["q3"]], errors="coerce")
+    min_values = pd.to_numeric(df[required_columns["min"]], errors="coerce")
+    max_values = pd.to_numeric(df[required_columns["max"]], errors="coerce")
 
     fig, ax = plt.subplots(figsize=(width, height))
 
-    all_positive = True
+    labels = df["file"].astype(str).tolist()
+    bxp_stats = []
 
-    for stat in stats:
-        column = f"{metric}_{stat}"
-        if column not in df.columns:
+    all_values_for_log_check = []
+
+    for label, mean, median, q1, q3, min_, max_ in zip(
+        labels,
+        mean_values,
+        median_values,
+        q1_values,
+        q3_values,
+        min_values,
+        max_values,
+    ):
+        values = [mean, median, q1, q3, min_, max_]
+
+        if any(pd.isna(v) for v in values):
             print(
-                f"[warning] missing column: {column}",
+                f"[warning] skipped one row in {metric}: NaN detected for {label}",
                 file=sys.stderr,
             )
             continue
 
-        values = pd.to_numeric(df[column], errors="coerce")
+        # Basic consistency checks
+        if not (min_ <= q1 <= median <= q3 <= max_):
+            print(
+                f"[warning] inconsistent box stats for {metric} / {label}: "
+                f"min={min_}, q1={q1}, median={median}, q3={q3}, max={max_}",
+                file=sys.stderr,
+            )
+            continue
 
-        valid_values = values.dropna()
-        if not valid_values.empty and (valid_values <= 0).any():
-            all_positive = False
+        bxp_stats.append({
+            "label": label,
+            "whislo": float(min_),     # bottom whisker
+            "q1": float(q1),           # box bottom
+            "med": float(median),      # median line
+            "q3": float(q3),           # box top
+            "whishi": float(max_),     # top whisker
+            "mean": float(mean),       # mean point
+            "fliers": [],              # no outlier data available
+        })
 
-        ax.plot(
-            x_positions,
-            values,
-            marker="o",
-            linewidth=1.8,
-            markersize=5,
-            label=STAT_LABELS.get(stat, stat),
+        all_values_for_log_check.extend([mean, median, q1, q3, min_, max_])
+
+    if not bxp_stats:
+        print(
+            f"[warning] skipped {metric}: no valid box plot rows",
+            file=sys.stderr,
         )
+        plt.close(fig)
+        return
 
-        if show_values:
-            for x, value in zip(x_positions, values):
-                if pd.isna(value):
-                    continue
-                ax.annotate(
-                    f"{value:.3f}".rstrip("0").rstrip("."),
-                    (x, value),
-                    xytext=(0, 6),
-                    textcoords="offset points",
-                    ha="center",
-                    fontsize=7,
-                )
+    ax.bxp(
+        bxp_stats,
+        showmeans=True,
+        meanline=False,
+        showfliers=False,
+        vert=True,
+        patch_artist=False,
+    )
+
+    if show_values:
+        for x, stats_dict in enumerate(bxp_stats, start=1):
+            mean = stats_dict["mean"]
+            median = stats_dict["med"]
+            q1 = stats_dict["q1"]
+            q3 = stats_dict["q3"]
+            min_ = stats_dict["whislo"]
+            max_ = stats_dict["whishi"]
+
+            ax.annotate(
+                f"mean {mean:.3f}".rstrip("0").rstrip("."),
+                (x, mean),
+                xytext=(5, 0),
+                textcoords="offset points",
+                fontsize=7,
+                va="center",
+            )
+            ax.annotate(
+                f"median {median:.3f}".rstrip("0").rstrip("."),
+                (x, median),
+                xytext=(5, -10),
+                textcoords="offset points",
+                fontsize=7,
+                va="center",
+            )
+            ax.annotate(
+                f"q1 {q1:.3f}".rstrip("0").rstrip("."),
+                (x, q1),
+                xytext=(5, -10),
+                textcoords="offset points",
+                fontsize=7,
+                va="center",
+            )
+            ax.annotate(
+                f"q3 {q3:.3f}".rstrip("0").rstrip("."),
+                (x, q3),
+                xytext=(5, 0),
+                textcoords="offset points",
+                fontsize=7,
+                va="center",
+            )
+            ax.annotate(
+                f"min {min_:.3f}".rstrip("0").rstrip("."),
+                (x, min_),
+                xytext=(5, -2),
+                textcoords="offset points",
+                fontsize=7,
+                va="top",
+            )
+            ax.annotate(
+                f"max {max_:.3f}".rstrip("0").rstrip("."),
+                (x, max_),
+                xytext=(5, 2),
+                textcoords="offset points",
+                fontsize=7,
+                va="bottom",
+            )
 
     title = METRIC_TITLES.get(metric, metric)
     ax.set_title(title, fontsize=15, fontweight="bold")
     ax.set_xlabel("Experiment")
     ax.set_ylabel(title)
-    ax.set_xticks(x_positions)
-    ax.set_xticklabels(x_labels, rotation=35, ha="right")
-    ax.grid(True, alpha=0.3)
-    ax.legend()
+    ax.grid(True, axis="y", alpha=0.3)
+
+    # x tick label rotation
+    plt.setp(ax.get_xticklabels(), rotation=35, ha="right")
 
     if log_scale:
-        if all_positive:
+        if all(v > 0 for v in all_values_for_log_check):
             ax.set_yscale("log")
         else:
             print(
@@ -254,13 +340,6 @@ def main() -> int:
     if args.sort == "name":
         df = df.sort_values("file", kind="stable").reset_index(drop=True)
 
-    requested_stats = parse_csv_option(args.stats)
-    try:
-        validate_requested_stats(requested_stats)
-    except ValueError as error:
-        print(f"[error] {error}", file=sys.stderr)
-        return 1
-
     detected_metrics = available_metrics(df)
 
     if args.metrics.strip().lower() == "all":
@@ -293,7 +372,6 @@ def main() -> int:
         plot_metric(
             df=df,
             metric=metric,
-            stats=requested_stats,
             output_file=output_file,
             dpi=args.dpi,
             width=args.width,
