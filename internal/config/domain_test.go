@@ -210,3 +210,132 @@ func TestERRejectsProbabilityAndAverageDegreeTogether(t *testing.T) {
 		t.Fatal("expected p and average_degree conflict")
 	}
 }
+
+func TestBAOpportunisticDomainEdgeCountAndDeterminism(t *testing.T) {
+	model := DomainTopologyConfig{Model: "ba-opportunistic", M: 3}
+	first := domainScenario(model, 80)
+	second := domainScenario(model, 80)
+	first.Domain.Node.ProcessingDelayDistribution = Distribution{Type: "normal", MeanMS: 50, StdDevMS: 25}
+	second.Domain.Node.ProcessingDelayDistribution = Distribution{Type: "normal", MeanMS: 50, StdDevMS: 25}
+	first.Domain.Edge.DelayDistribution = Distribution{Type: "exponential", MeanMS: 100}
+	second.Domain.Edge.DelayDistribution = Distribution{Type: "exponential", MeanMS: 100}
+
+	resolveDomainForTest(t, first)
+	resolveDomainForTest(t, second)
+
+	want := 3*4/2 + (80-4)*3
+	if len(first.Topology.Edges) != want {
+		t.Fatalf("BA-opportunistic edge count=%d; want %d", len(first.Topology.Edges), want)
+	}
+	if !reflect.DeepEqual(first.Topology, second.Topology) {
+		t.Fatal("same seed and delay distributions generated different BA-opportunistic topology")
+	}
+}
+
+func TestBAOpportunisticFavorsLowProcessingDelayHub(t *testing.T) {
+	const (
+		n = 100
+		m = 2
+	)
+	nodes := make([]NodeSpec, n)
+	for i := range nodes {
+		processingMS := 1000.0
+		if i == 0 {
+			processingMS = 1
+		}
+		nodes[i] = NodeSpec{
+			ID: "n",
+			Performance: &NodePerformance{
+				ProcessingDelayDistribution: constantDistribution(processingMS),
+				Workers:                     1, QueueCapacity: 16, OverflowPolicy: "drop_new",
+			},
+		}
+	}
+	edge := EdgeNetwork{
+		DelayDistribution: Distribution{Type: "constant", ValueMS: 50},
+		QueueCapacity:     16,
+	}
+
+	edges, err := generateBAOpportunistic(n, m, nodes, edge, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	degrees := make([]int, n)
+	for _, edge := range edges {
+		degrees[edge.a]++
+		degrees[edge.b]++
+	}
+	if degrees[0] <= degrees[1] || degrees[0] <= degrees[2] {
+		t.Fatalf("fast initial node was not favored: degree[0]=%d degree[1]=%d degree[2]=%d", degrees[0], degrees[1], degrees[2])
+	}
+	if degrees[0] < 30 {
+		t.Fatalf("fast node did not become a strong hub: degree[0]=%d", degrees[0])
+	}
+}
+
+func TestBAOpportunisticRetainsSelectedLowDelayEdges(t *testing.T) {
+	const (
+		n = 200
+		m = 3
+	)
+	nodes := make([]NodeSpec, n)
+	for i := range nodes {
+		nodes[i] = NodeSpec{
+			ID: "n",
+			Performance: &NodePerformance{
+				ProcessingDelayDistribution: constantDistribution(0),
+				Workers:                     1, QueueCapacity: 16, OverflowPolicy: "drop_new",
+			},
+		}
+	}
+	edge := EdgeNetwork{
+		DelayDistribution: Distribution{Type: "exponential", MeanMS: 100},
+		QueueCapacity:     16,
+	}
+
+	edges, err := generateBAOpportunistic(n, m, nodes, edge, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(edges) == 0 {
+		t.Fatal("no edges generated")
+	}
+
+	total := 0.0
+	count := 0
+	for _, generated := range edges {
+		if !generated.hasDelayBaseline {
+			t.Fatal("BA-opportunistic edge is missing its selected delay baseline")
+		}
+		total += generated.delayBaselineMS
+		count++
+	}
+	mean := total / float64(count)
+	if mean >= 100 {
+		t.Fatalf("selected edge mean=%fms; expected opportunistic selection below source mean 100ms", mean)
+	}
+}
+
+func TestBAOpportunisticInitialCliqueUsesProcessingAndLinkDelay(t *testing.T) {
+	processing := []float64{1, 50, 5, 5}
+	delays := map[[2]int]float64{
+		{0, 1}: 100,
+		{0, 2}: 1,
+		{0, 3}: 50,
+		{1, 2}: 100,
+		{1, 3}: 100,
+		{2, 3}: 1,
+	}
+	pairDelay := func(a, b int) float64 {
+		if a > b {
+			a, b = b, a
+		}
+		return delays[[2]int{a, b}]
+	}
+
+	got := selectOpportunisticInitialClique(4, 3, processing, pairDelay)
+	want := []int{0, 2, 3}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("initial clique=%v; want %v", got, want)
+	}
+}

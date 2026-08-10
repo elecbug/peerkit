@@ -12,6 +12,12 @@ import (
 type generatedEdge struct {
 	a int
 	b int
+
+	// delayBaselineMS is populated by topology generators that make the
+	// network delay part of the attachment decision. Ordinary generators leave
+	// it unset and ResolveDelayAssignments samples the edge baseline later.
+	delayBaselineMS  float64
+	hasDelayBaseline bool
 }
 
 // ExpandDomain expands a compact domain declaration into the explicit node and
@@ -52,8 +58,9 @@ func (s *Scenario) ExpandDomain() error {
 	}
 
 	// Domain-level performance settings override top-level defaults while still
-	// inheriting fields omitted by the compact declaration. Per-node and per-edge
-	// baseline delays are assigned after the topology has been fully expanded.
+	// inheriting fields omitted by the compact declaration. Ordinary topologies
+	// assign stable baselines after expansion; BA-opportunistic resolves node
+	// baselines during expansion because they participate in attachment choices.
 	var domainNodeTemplate *NodePerformance
 	if domain.Node != nil {
 		resolved := *domain.Node
@@ -82,7 +89,14 @@ func (s *Scenario) ExpandDomain() error {
 	}
 
 	topologyRNG := rand.New(rand.NewSource(s.Experiment.Seed))
-	generated, err := generateDomainEdges(nodeCount, domain.Topology, topologyRNG)
+	generated, err := generateDomainEdges(
+		nodeCount,
+		domain.Topology,
+		topologyRNG,
+		nodes,
+		s.Defaults.Edge,
+		s.Experiment.Seed,
+	)
 	if err != nil {
 		return err
 	}
@@ -93,10 +107,16 @@ func (s *Scenario) ExpandDomain() error {
 
 	edges := make([]EdgeSpec, 0, len(generated))
 	for _, edge := range generated {
-		edges = append(edges, EdgeSpec{
+		spec := EdgeSpec{
 			Source: nodes[edge.a].ID,
 			Target: nodes[edge.b].ID,
-		})
+		}
+		if edge.hasDelayBaseline {
+			network := cloneEdgeNetwork(s.Defaults.Edge)
+			network.DelayDistribution = constantDistribution(edge.delayBaselineMS)
+			spec.Network = &network
+		}
+		edges = append(edges, spec)
 	}
 
 	s.Topology = TopologyConfig{
@@ -126,7 +146,14 @@ func cloneEdgeNetwork(value EdgeNetwork) EdgeNetwork {
 	return cloned
 }
 
-func generateDomainEdges(n int, cfg DomainTopologyConfig, rng *rand.Rand) ([]generatedEdge, error) {
+func generateDomainEdges(
+	n int,
+	cfg DomainTopologyConfig,
+	rng *rand.Rand,
+	nodes []NodeSpec,
+	edgeTemplate EdgeNetwork,
+	seed int64,
+) ([]generatedEdge, error) {
 	model := strings.ToLower(strings.TrimSpace(cfg.Model))
 	switch model {
 	case "er", "erdos-renyi", "erdos_renyi", "gnp":
@@ -160,6 +187,21 @@ func generateDomainEdges(n int, cfg DomainTopologyConfig, rng *rand.Rand) ([]gen
 			return nil, fmt.Errorf("domain.topology.m must be smaller than node count for BA")
 		}
 		return generateBA(n, cfg.M, rng), nil
+
+	case "ba-opportunistic", "ba_opportunistic", "barabasi-albert-opportunistic", "barabasi_albert_opportunistic":
+		if cfg.M <= 0 {
+			return nil, fmt.Errorf("domain.topology.m must be positive for BA-opportunistic")
+		}
+		if cfg.M >= n {
+			return nil, fmt.Errorf("domain.topology.m must be smaller than node count for BA-opportunistic")
+		}
+		if len(nodes) != n {
+			return nil, fmt.Errorf("BA-opportunistic requires %d resolved nodes; got %d", n, len(nodes))
+		}
+		if err := resolveNodeDelayAssignments(nodes, seed); err != nil {
+			return nil, fmt.Errorf("resolve BA-opportunistic node delays: %w", err)
+		}
+		return generateBAOpportunistic(n, cfg.M, nodes, edgeTemplate, seed)
 
 	case "ws", "watts-strogatz", "watts_strogatz":
 		if cfg.K <= 0 || cfg.K >= n || cfg.K%2 != 0 {
@@ -233,6 +275,225 @@ func generateBA(n, m int, rng *rand.Rand) []generatedEdge {
 		}
 	}
 	return edges
+}
+
+// generateBAOpportunistic keeps the BA growth process, but makes both the
+// initial hub candidates and later preferential-attachment decisions
+// performance-aware.
+//
+// Stable node processing baselines are resolved before topology generation.
+// The initial K_(m+1) clique is selected greedily: after the first (lowest
+// processing-delay) node, each next seed minimizes
+//
+//	processingBaseline(candidate) + mean(linkBaseline(candidate, clique))
+//
+// Later nodes attach to m existing nodes with weight
+//
+//	degree(target) / (1ms + processingBaseline(target) + edgeBaseline)
+//
+// Candidate edge baselines are sampled once from delay_distribution and cached;
+// if an edge is selected, that same value becomes its stable runtime baseline.
+// Thus fast-processing nodes with favorable links are preferentially placed in
+// hub positions, while the degree term retains the BA rich-get-richer effect.
+func generateBAOpportunistic(
+	n, m int,
+	nodes []NodeSpec,
+	edgeTemplate EdgeNetwork,
+	seed int64,
+) ([]generatedEdge, error) {
+	if err := validateDistribution(edgeTemplate.DelayDistribution); err != nil {
+		return nil, fmt.Errorf("BA-opportunistic edge delay_distribution: %w", err)
+	}
+
+	processingBaselines := make([]float64, n)
+	for index, node := range nodes {
+		if node.Performance == nil {
+			return nil, fmt.Errorf("BA-opportunistic node %s has no resolved performance config", node.ID)
+		}
+		delay := node.Performance.ProcessingDelayDistribution
+		if strings.ToLower(delay.Type) != "constant" {
+			return nil, fmt.Errorf("BA-opportunistic node %s processing baseline is not resolved", node.ID)
+		}
+		processingBaselines[index] = delay.ValueMS
+	}
+
+	edgeRNG := rand.New(rand.NewSource(domainSeed(seed, "ba-opportunistic-edge-candidates")))
+	choiceRNG := rand.New(rand.NewSource(domainSeed(seed, "ba-opportunistic-attachment")))
+
+	type pairKey struct {
+		a int
+		b int
+	}
+	pairDelays := make(map[pairKey]float64)
+	pairDelay := func(a, b int) float64 {
+		if a > b {
+			a, b = b, a
+		}
+		key := pairKey{a: a, b: b}
+		if delay, ok := pairDelays[key]; ok {
+			return delay
+		}
+		delay := edgeTemplate.DelayDistribution.SampleMilliseconds(edgeRNG)
+		pairDelays[key] = delay
+		return delay
+	}
+
+	initial := m + 1
+	initialNodes := selectOpportunisticInitialClique(n, initial, processingBaselines, pairDelay)
+	inInitial := make(map[int]struct{}, initial)
+	for _, node := range initialNodes {
+		inInitial[node] = struct{}{}
+	}
+
+	edges := make([]generatedEdge, 0, m*n)
+	degrees := make([]int, n)
+	adjacency := make([]map[int]struct{}, n)
+	for i := range adjacency {
+		adjacency[i] = make(map[int]struct{})
+	}
+
+	for i := 0; i < len(initialNodes); i++ {
+		for j := i + 1; j < len(initialNodes); j++ {
+			a := initialNodes[i]
+			b := initialNodes[j]
+			addGeneratedEdgeWithDelay(&edges, adjacency, degrees, a, b, pairDelay(a, b))
+		}
+	}
+
+	// The initial clique is the earliest BA population. All other logical nodes
+	// then arrive in stable ID/index order.
+	existing := append([]int(nil), initialNodes...)
+	for node := 0; node < n; node++ {
+		if _, skip := inInitial[node]; skip {
+			continue
+		}
+
+		candidateDelays := make([]float64, n)
+		for _, target := range existing {
+			candidateDelays[target] = pairDelay(node, target)
+		}
+
+		selected := make(map[int]struct{}, m)
+		for len(selected) < m {
+			target := weightedOpportunityChoice(
+				existing,
+				degrees,
+				processingBaselines,
+				candidateDelays,
+				selected,
+				choiceRNG,
+			)
+			selected[target] = struct{}{}
+		}
+		for target := range selected {
+			addGeneratedEdgeWithDelay(
+				&edges,
+				adjacency,
+				degrees,
+				node,
+				target,
+				candidateDelays[target],
+			)
+		}
+		existing = append(existing, node)
+	}
+	return edges, nil
+}
+
+func selectOpportunisticInitialClique(
+	n int,
+	initial int,
+	processingBaselines []float64,
+	pairDelay func(int, int) float64,
+) []int {
+	selected := make([]int, 0, initial)
+	chosen := make(map[int]struct{}, initial)
+
+	// There is no link to evaluate for the very first node, so begin with the
+	// lowest processing baseline. Ties are resolved by the stable node index.
+	first := 0
+	for candidate := 1; candidate < n; candidate++ {
+		if processingBaselines[candidate] < processingBaselines[first] {
+			first = candidate
+		}
+	}
+	selected = append(selected, first)
+	chosen[first] = struct{}{}
+
+	for len(selected) < initial {
+		bestNode := -1
+		bestScore := 0.0
+		for candidate := 0; candidate < n; candidate++ {
+			if _, exists := chosen[candidate]; exists {
+				continue
+			}
+			linkTotal := 0.0
+			for _, existing := range selected {
+				linkTotal += pairDelay(candidate, existing)
+			}
+			linkMean := linkTotal / float64(len(selected))
+			score := processingBaselines[candidate] + linkMean
+			if bestNode < 0 || score < bestScore || (score == bestScore && candidate < bestNode) {
+				bestNode = candidate
+				bestScore = score
+			}
+		}
+		selected = append(selected, bestNode)
+		chosen[bestNode] = struct{}{}
+	}
+	return selected
+}
+
+func weightedOpportunityChoice(
+	candidates []int,
+	degrees []int,
+	processingBaselines []float64,
+	edgeBaselines []float64,
+	excluded map[int]struct{},
+	rng *rand.Rand,
+) int {
+	weights := make([]float64, len(candidates))
+	total := 0.0
+	for index, node := range candidates {
+		if _, skip := excluded[node]; skip {
+			continue
+		}
+		// The 1ms floor prevents a zero-delay candidate from producing an
+		// infinite weight while remaining negligible at ordinary WAN delays.
+		costMS := 1.0 + processingBaselines[node] + edgeBaselines[node]
+		weight := float64(degrees[node]) / costMS
+		weights[index] = weight
+		total += weight
+	}
+	if total <= 0 {
+		for {
+			candidate := candidates[rng.Intn(len(candidates))]
+			if _, skip := excluded[candidate]; !skip {
+				return candidate
+			}
+		}
+	}
+
+	choice := rng.Float64() * total
+	for index, node := range candidates {
+		if _, skip := excluded[node]; skip {
+			continue
+		}
+		weight := weights[index]
+		if choice < weight {
+			return node
+		}
+		choice -= weight
+	}
+
+	// Floating-point rounding can leave choice infinitesimally above zero.
+	for index := len(candidates) - 1; index >= 0; index-- {
+		node := candidates[index]
+		if _, skip := excluded[node]; !skip {
+			return node
+		}
+	}
+	panic("unreachable opportunistic selection")
 }
 
 func weightedDegreeChoice(degrees []int, excluded map[int]struct{}, rng *rand.Rand) int {
@@ -421,15 +682,23 @@ func generatedComponents(n int, edges []generatedEdge) [][]int {
 }
 
 func normalizeGeneratedEdges(edges []generatedEdge) []generatedEdge {
-	unique := make(map[generatedEdge]struct{}, len(edges))
+	type edgeKey struct {
+		a int
+		b int
+	}
+	unique := make(map[edgeKey]generatedEdge, len(edges))
 	for _, edge := range edges {
 		if edge.a == edge.b {
 			continue
 		}
-		unique[canonicalGeneratedEdge(edge.a, edge.b)] = struct{}{}
+		edge = canonicalizeGeneratedEdge(edge)
+		key := edgeKey{a: edge.a, b: edge.b}
+		if _, exists := unique[key]; !exists {
+			unique[key] = edge
+		}
 	}
 	result := make([]generatedEdge, 0, len(unique))
-	for edge := range unique {
+	for _, edge := range unique {
 		result = append(result, edge)
 	}
 	sort.Slice(result, func(i, j int) bool {
@@ -442,10 +711,15 @@ func normalizeGeneratedEdges(edges []generatedEdge) []generatedEdge {
 }
 
 func canonicalGeneratedEdge(a, b int) generatedEdge {
-	if a < b {
-		return generatedEdge{a: a, b: b}
+	return canonicalizeGeneratedEdge(generatedEdge{a: a, b: b})
+}
+
+func canonicalizeGeneratedEdge(edge generatedEdge) generatedEdge {
+	if edge.a <= edge.b {
+		return edge
 	}
-	return generatedEdge{a: b, b: a}
+	edge.a, edge.b = edge.b, edge.a
+	return edge
 }
 
 func addGeneratedEdge(edges *[]generatedEdge, adjacency []map[int]struct{}, degrees []int, a, b int) {
@@ -453,6 +727,29 @@ func addGeneratedEdge(edges *[]generatedEdge, adjacency []map[int]struct{}, degr
 		return
 	}
 	*edges = append(*edges, canonicalGeneratedEdge(a, b))
+	adjacency[a][b] = struct{}{}
+	adjacency[b][a] = struct{}{}
+	degrees[a]++
+	degrees[b]++
+}
+
+func addGeneratedEdgeWithDelay(
+	edges *[]generatedEdge,
+	adjacency []map[int]struct{},
+	degrees []int,
+	a, b int,
+	delayBaselineMS float64,
+) {
+	if _, exists := adjacency[a][b]; exists {
+		return
+	}
+	edge := canonicalizeGeneratedEdge(generatedEdge{
+		a:                a,
+		b:                b,
+		delayBaselineMS:  delayBaselineMS,
+		hasDelayBaseline: true,
+	})
+	*edges = append(*edges, edge)
 	adjacency[a][b] = struct{}{}
 	adjacency[b][a] = struct{}{}
 	degrees[a]++
