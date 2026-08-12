@@ -14,12 +14,14 @@ deployment:
 
 defaults:
   node:
-    processing_delay: "normal(mean=50ms, stddev=10ms)"
+    processing_delay_distribution: "normal(mean=50ms, stddev=10ms)"
+    processing_delay_jitter_stddev: 5ms
     workers: 1
     queue_capacity: 256
     overflow_policy: drop_new
   edge:
-    delay: "exponential(mean=25ms)"
+    delay_distribution: "exponential(mean=25ms)"
+    delay_jitter_stddev: 5ms
     loss_rate: 0.0
     bandwidth_mbps: 10
     queue_capacity: 64
@@ -30,7 +32,8 @@ topology:
     - id: n0
     - id: n1
       performance:
-        processing_delay: "constant(150ms)"
+        processing_delay_distribution: "constant(150ms)"
+        processing_delay_jitter_stddev: 10ms
         workers: 1
         queue_capacity: 256
         overflow_policy: drop_new
@@ -42,7 +45,8 @@ topology:
     - source: n1
       target: n2
       network:
-        delay: "constant(200ms)"
+        delay_distribution: "constant(200ms)"
+        delay_jitter_stddev: 10ms
         loss_rate: 0.0
         bandwidth_mbps: 5
         queue_capacity: 32

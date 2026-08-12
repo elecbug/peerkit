@@ -43,12 +43,14 @@ domain:
     model: ba
     m: 6
   node:
-    processing_delay: "normal(mean=100ms, stddev=25ms)"
+    processing_delay_distribution: "normal(mean=100ms, stddev=25ms)"
+    processing_delay_jitter_stddev: 10ms
     workers: 2
     queue_capacity: 512
     overflow_policy: drop_new
   edge:
-    delay: "exponential(mean=30ms)"
+    delay_distribution: "exponential(mean=30ms)"
+    delay_jitter_stddev: 10ms
     loss_rate: 0.002
     bandwidth_mbps: 100
     queue_capacity: 64

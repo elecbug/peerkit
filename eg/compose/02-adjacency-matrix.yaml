@@ -14,12 +14,14 @@ deployment:
 
 defaults:
   node:
-    processing_delay: "constant(20ms)"
+    processing_delay_distribution: "constant(20ms)"
+    processing_delay_jitter_stddev: 2ms
     workers: 2
     queue_capacity: 256
     overflow_policy: drop_new
   edge:
-    delay: "constant(40ms)"
+    delay_distribution: "constant(40ms)"
+    delay_jitter_stddev: 4ms
     loss_rate: 0.01
     bandwidth_mbps: 20
     queue_capacity: 64

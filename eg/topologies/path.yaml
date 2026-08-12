@@ -14,12 +14,14 @@ domain:
   topology:
     model: path
   node:
-    processing_delay: "constant(10ms)"
+    processing_delay_distribution: "constant(10ms)"
+    processing_delay_jitter_stddev: 0ms
     workers: 1
     queue_capacity: 64
     overflow_policy: drop_new
   edge:
-    delay: "constant(10ms)"
+    delay_distribution: "constant(10ms)"
+    delay_jitter_stddev: 0ms
     loss_rate: 0.0
     bandwidth_mbps: 100
     queue_capacity: 32
