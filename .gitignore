@@ -1,17 +1,17 @@
 .peerkit/*
+batch-logs/*
 bin/*
 exp/*
-batch-logs/*
+script/standard-metric-extracter/extracted-metrics/*
 venv/*
-standard-metric-extracter/extracted-metrics/*
 
 log/*
 logs/*
+*.log
+
 temp/*
 temps/*
 tmp/*
 tmps/*
-
-*.log
 
 !exp/run.sh
