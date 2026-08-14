@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-IMAGE="localhost:5000/peerkit-peer:dev"
 
-EXP_DIR="${1:?Usage: $0 <experiment-dir> <repeat> [keyword-file]}"
-REPEAT="${2:?Usage: $0 <experiment-dir> <repeat> [keyword-file]}"
+EXP_DIR="${1:?Usage: $0 <experiment-dir> <repeat> [keyword-file] [docker-registry]}"
+REPEAT="${2:?Usage: $0 <experiment-dir> <repeat> [keyword-file] [docker-registry]}"
 KEYWORD_FILE="${3:-KEYWORD}"
+DOCKER_REGISTRY="${4:-localhost:5000}"
+
+IMAGE="$DOCKER_REGISTRY/peerkit-peer:dev"
 
 LOG_ROOT="batch-logs/$(date '+%Y%m%d-%H%M%S')"
 
