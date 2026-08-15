@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-
 EXP_DIR="${1:?Usage: $0 <experiment-dir> <repeat> [keyword-file] [docker-registry]}"
 REPEAT="${2:?Usage: $0 <experiment-dir> <repeat> [keyword-file] [docker-registry]}"
 KEYWORD_FILE="${3:-KEYWORD}"
@@ -10,6 +9,14 @@ DOCKER_REGISTRY="${4:-localhost:5000}"
 IMAGE="$DOCKER_REGISTRY/peerkit-peer:dev"
 
 LOG_ROOT="batch-logs/$(date '+%Y%m%d-%H%M%S')"
+
+# Maximum number of retries after the initial attempt.
+# Example:
+#   MAX_RETRIES=5 ./script/run-all.sh ...
+MAX_RETRIES="${MAX_RETRIES:-3}"
+
+# Seconds to wait before retrying a failed experiment.
+RETRY_WAIT_SECONDS="${RETRY_WAIT_SECONDS:-30}"
 
 mkdir -p "$LOG_ROOT"
 
@@ -214,30 +221,95 @@ for RUN_INDEX in $(seq 1 "$REPEAT"); do
         echo "Preparing: $(date '+%Y-%m-%d %H:%M:%S')"
         echo "============================================================"
 
-        cleanup_matching_docker_resources \
-            2>&1 | tee -a "$LOG_FILE"
+        ATTEMPT=1
+        MAX_ATTEMPTS=$((MAX_RETRIES + 1))
+        RUN_SUCCESS=0
 
-        echo
-        echo "Started: $(date '+%Y-%m-%d %H:%M:%S')" |
-            tee -a "$LOG_FILE"
-
-        if sudo ./bin/peerkit run \
-            --image "$IMAGE" \
-            "$SCENARIO" \
-            2>&1 | tee -a "$LOG_FILE"
-        then
-            echo "SUCCESS: $SCENARIO run $RUN_INDEX" |
+        while (( ATTEMPT <= MAX_ATTEMPTS )); do
+            echo
+            echo "------------------------------------------------------------" |
                 tee -a "$LOG_FILE"
-        else
-            STATUS=${PIPESTATUS[0]}
-            FAILURES=$((FAILURES + 1))
-
-            echo "FAILED: $SCENARIO run $RUN_INDEX, exit=$STATUS" |
+            echo "Attempt: $ATTEMPT/$MAX_ATTEMPTS" |
+                tee -a "$LOG_FILE"
+            echo "Scenario: $SCENARIO" |
+                tee -a "$LOG_FILE"
+            echo "Run: $RUN_INDEX/$REPEAT" |
+                tee -a "$LOG_FILE"
+            echo "------------------------------------------------------------" |
                 tee -a "$LOG_FILE"
 
-            sudo ./bin/peerkit stop \
+            #
+            # Always start an attempt from a clean Docker state.
+            #
+            cleanup_matching_docker_resources \
+                2>&1 | tee -a "$LOG_FILE"
+
+            echo |
+                tee -a "$LOG_FILE"
+
+            echo "Started: $(date '+%Y-%m-%d %H:%M:%S')" |
+                tee -a "$LOG_FILE"
+
+            if sudo ./bin/peerkit run \
+                --image "$IMAGE" \
                 "$SCENARIO" \
                 2>&1 | tee -a "$LOG_FILE"
+            then
+                echo "SUCCESS: $SCENARIO run $RUN_INDEX attempt $ATTEMPT" |
+                    tee -a "$LOG_FILE"
+
+                RUN_SUCCESS=1
+                break
+            else
+                STATUS=${PIPESTATUS[0]}
+
+                echo "FAILED: $SCENARIO run $RUN_INDEX attempt $ATTEMPT, exit=$STATUS" |
+                    tee -a "$LOG_FILE"
+
+                echo |
+                    tee -a "$LOG_FILE"
+
+                echo "Stopping failed PeerKit experiment..." |
+                    tee -a "$LOG_FILE"
+
+                sudo ./bin/peerkit stop \
+                    "$SCENARIO" \
+                    2>&1 | tee -a "$LOG_FILE" || true
+
+                echo |
+                    tee -a "$LOG_FILE"
+
+                echo "Resetting Docker resources after failure..." |
+                    tee -a "$LOG_FILE"
+
+                cleanup_matching_docker_resources \
+                    2>&1 | tee -a "$LOG_FILE"
+
+                if (( ATTEMPT < MAX_ATTEMPTS )); then
+                    echo |
+                        tee -a "$LOG_FILE"
+
+                    echo "Waiting ${RETRY_WAIT_SECONDS}s before retry..." |
+                        tee -a "$LOG_FILE"
+
+                    sleep "$RETRY_WAIT_SECONDS"
+
+                    echo "Retrying the same scenario..." |
+                        tee -a "$LOG_FILE"
+                fi
+            fi
+
+            ATTEMPT=$((ATTEMPT + 1))
+        done
+
+        if (( RUN_SUCCESS == 0 )); then
+            FAILURES=$((FAILURES + 1))
+
+            echo |
+                tee -a "$LOG_FILE"
+
+            echo "PERMANENT FAILURE: $SCENARIO run $RUN_INDEX failed after $MAX_ATTEMPTS attempts." |
+                tee -a "$LOG_FILE"
         fi
 
         sleep 10

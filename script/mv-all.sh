@@ -3,13 +3,17 @@
 set -euo pipefail
 
 # This script must be executed from the project root directory.
-# It collects experiment result directories from:
+# It collects valid experiment result directories from:
 #
 #   .peerkit/runs/<DATE>/<EXPERIMENT>/
 #
 # and moves them into:
 #
 #   nas/<CATEGORY_DIR>/result/<NAS_EXP_NAME>/
+#
+# An experiment directory is discarded if:
+#   - its "results" subdirectory does not exist, or
+#   - its "results" subdirectory is empty.
 #
 # Usage:
 #   ./script/mv-all.sh <CATEGORY_DIR> <NAS_EXP_NAME>
@@ -49,7 +53,7 @@ fi
 # Example:
 #   .peerkit/runs/260731/experiment-a
 #   .peerkit/runs/260801/experiment-b
-mapfile -d '' -t SOURCE_DIRS < <(
+mapfile -d '' -t ALL_SOURCE_DIRS < <(
     find "$RUNS_DIR" \
         -mindepth 2 \
         -maxdepth 2 \
@@ -58,8 +62,50 @@ mapfile -d '' -t SOURCE_DIRS < <(
         sort -z
 )
 
-if (( ${#SOURCE_DIRS[@]} == 0 )); then
+if (( ${#ALL_SOURCE_DIRS[@]} == 0 )); then
     echo "[INFO] No experiment result directories were found."
+    exit 0
+fi
+
+# Filter invalid experiment directories.
+#
+# An experiment directory is considered invalid when:
+#   1. <experiment>/results does not exist, or
+#   2. <experiment>/results exists but is empty.
+#
+# Invalid directories are permanently deleted.
+SOURCE_DIRS=()
+
+for SOURCE_DIR in "${ALL_SOURCE_DIRS[@]}"; do
+    RESULTS_DIR="$SOURCE_DIR/results"
+
+    if [[ ! -d "$RESULTS_DIR" ]]; then
+        echo "[DISCARD] results directory does not exist:"
+        echo "          $SOURCE_DIR"
+        rm -rf -- "$SOURCE_DIR"
+        continue
+    fi
+
+    if [[ -z "$(find "$RESULTS_DIR" -mindepth 1 -print -quit)" ]]; then
+        echo "[DISCARD] results directory is empty:"
+        echo "          $SOURCE_DIR"
+        rm -rf -- "$SOURCE_DIR"
+        continue
+    fi
+
+    SOURCE_DIRS+=("$SOURCE_DIR")
+done
+
+# Remove date directories that became empty after discarding invalid runs.
+find "$RUNS_DIR" \
+    -mindepth 1 \
+    -maxdepth 1 \
+    -type d \
+    -empty \
+    -delete
+
+if (( ${#SOURCE_DIRS[@]} == 0 )); then
+    echo "[INFO] No valid experiment result directories remain."
     exit 0
 fi
 
@@ -77,7 +123,7 @@ for SOURCE_DIR in "${SOURCE_DIRS[@]}"; do
         echo "Name: $DIR_NAME" >&2
         echo "First path:  ${SEEN_NAMES[$DIR_NAME]}" >&2
         echo "Second path: $SOURCE_DIR" >&2
-        echo "No directories were moved." >&2
+        echo "No valid directories were moved." >&2
         exit 1
     fi
 
@@ -95,7 +141,7 @@ for SOURCE_DIR in "${SOURCE_DIRS[@]}"; do
         echo "Error: Destination already contains an entry with the same name." >&2
         echo "Source:      $SOURCE_DIR" >&2
         echo "Destination: $TARGET_DIR" >&2
-        echo "No directories were moved." >&2
+        echo "No valid directories were moved." >&2
         exit 1
     fi
 done
@@ -108,7 +154,7 @@ echo "Source root: $RUNS_DIR"
 echo "Destination: $DEST_DIR"
 echo "Directory count: ${#SOURCE_DIRS[@]}"
 
-# Move each experiment result directory into the destination directory.
+# Move each valid experiment result directory into the destination directory.
 for SOURCE_DIR in "${SOURCE_DIRS[@]}"; do
     DIR_NAME="$(basename "$SOURCE_DIR")"
 
@@ -126,4 +172,4 @@ find "$RUNS_DIR" \
     -empty \
     -delete
 
-echo "[DONE] All experiment result directories were moved successfully."
+echo "[DONE] All valid experiment result directories were moved successfully."
