@@ -13,3 +13,5 @@ temp/*
 temps/*
 tmp/*
 tmps/*
+*.temp
+*.tmp
