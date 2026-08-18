@@ -1,7 +1,9 @@
 package config
 
 import (
+	"math/rand"
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -337,5 +339,198 @@ func TestBAOpportunisticInitialCliqueUsesProcessingAndLinkDelay(t *testing.T) {
 	want := []int{0, 2, 3}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("initial clique=%v; want %v", got, want)
+	}
+}
+
+func TestDRSDomainIsDeterministicAndUsesFastestQuartileAsCore(t *testing.T) {
+	const (
+		n    = 20
+		beta = 2
+	)
+	fast := map[int]bool{1: true, 3: true, 5: true, 7: true, 9: true}
+	nodes := make([]NodeSpec, n)
+	for i := range nodes {
+		delay := 100.0 + float64(i)
+		if fast[i] {
+			delay = float64(i) / 10
+		}
+		nodes[i] = NodeSpec{
+			ID: "n" + strconv.Itoa(i),
+			Performance: &NodePerformance{
+				ProcessingDelayDistribution: constantDistribution(delay),
+				Workers:                     1,
+				QueueCapacity:               16,
+				OverflowPolicy:              "drop_new",
+			},
+		}
+	}
+
+	first, err := generateDRS(n, 0.25, beta, nodes, rand.New(rand.NewSource(42)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := generateDRS(n, 0.25, beta, nodes, rand.New(rand.NewSource(42)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(normalizeGeneratedEdges(first), normalizeGeneratedEdges(second)) {
+		t.Fatal("same seed and node performance generated different DRS topology")
+	}
+
+	edgeSet := make(map[[2]int]struct{})
+	for _, edge := range normalizeGeneratedEdges(first) {
+		a, b := edge.a, edge.b
+		if a > b {
+			a, b = b, a
+		}
+		edgeSet[[2]int{a, b}] = struct{}{}
+	}
+
+	inner := []int{1, 3, 5, 7, 9}
+	for i, node := range inner {
+		next := inner[(i+1)%len(inner)]
+		a, b := node, next
+		if a > b {
+			a, b = b, a
+		}
+		if _, ok := edgeSet[[2]int{a, b}]; !ok {
+			t.Fatalf("missing inner-ring edge %d-%d", node, next)
+		}
+	}
+
+	outer := make([]int, 0, n-len(inner))
+	for i := 0; i < n; i++ {
+		if !fast[i] {
+			outer = append(outer, i)
+		}
+	}
+	for i, node := range outer {
+		next := outer[(i+1)%len(outer)]
+		a, b := node, next
+		if a > b {
+			a, b = b, a
+		}
+		if _, ok := edgeSet[[2]int{a, b}]; !ok {
+			t.Fatalf("missing outer-ring edge %d-%d", node, next)
+		}
+	}
+
+	for _, node := range outer {
+		coreNeighbors := 0
+		for target := range fast {
+			a, b := node, target
+			if a > b {
+				a, b = b, a
+			}
+			if _, ok := edgeSet[[2]int{a, b}]; ok {
+				coreNeighbors++
+			}
+		}
+		if coreNeighbors != beta {
+			t.Fatalf("outer node %d has %d core neighbors; want %d", node, coreNeighbors, beta)
+		}
+	}
+}
+
+func TestDRSDomainAlphaControlsCoreRatio(t *testing.T) {
+	const (
+		n     = 20
+		alpha = 0.40
+		beta  = 1
+	)
+
+	// The first eight nodes are the fastest, so ceil(alpha*n)=8 must form
+	// the inner ring when alpha=0.40.
+	nodes := make([]NodeSpec, n)
+	for i := range nodes {
+		delay := 100.0 + float64(i)
+		if i < 8 {
+			delay = float64(i + 1)
+		}
+		nodes[i] = NodeSpec{
+			ID: "n" + strconv.Itoa(i),
+			Performance: &NodePerformance{
+				ProcessingDelayDistribution: constantDistribution(delay),
+				Workers:                     1,
+				QueueCapacity:               16,
+				OverflowPolicy:              "drop_new",
+			},
+		}
+	}
+
+	edges, err := generateDRS(n, alpha, beta, nodes, rand.New(rand.NewSource(42)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	edgeSet := make(map[[2]int]struct{})
+	for _, edge := range normalizeGeneratedEdges(edges) {
+		a, b := edge.a, edge.b
+		if a > b {
+			a, b = b, a
+		}
+		edgeSet[[2]int{a, b}] = struct{}{}
+	}
+
+	inner := []int{0, 1, 2, 3, 4, 5, 6, 7}
+	for i, node := range inner {
+		next := inner[(i+1)%len(inner)]
+		a, b := node, next
+		if a > b {
+			a, b = b, a
+		}
+		if _, ok := edgeSet[[2]int{a, b}]; !ok {
+			t.Fatalf("missing alpha-controlled inner-ring edge %d-%d", node, next)
+		}
+	}
+}
+
+func TestDRSDomainDefaultsAlphaToQuarter(t *testing.T) {
+	model := DomainTopologyConfig{Model: "drs", Beta: floatPointer(2)}
+	scenario := domainScenario(model, 100)
+	scenario.ApplyDefaults()
+	if err := scenario.ExpandDomain(); err != nil {
+		t.Fatal(err)
+	}
+	if len(scenario.Topology.Edges) == 0 {
+		t.Fatal("DRS with omitted alpha generated no edges")
+	}
+}
+
+func TestDRSDomainRejectsInvalidAlpha(t *testing.T) {
+	for _, alpha := range []float64{0, -0.1, 1, 1.1} {
+		scenario := domainScenario(DomainTopologyConfig{
+			Model: "drs", Alpha: floatPointer(alpha), Beta: floatPointer(1),
+		}, 100)
+		scenario.ApplyDefaults()
+		if err := scenario.ExpandDomain(); err == nil {
+			t.Fatalf("expected DRS alpha=%v to be rejected", alpha)
+		}
+	}
+}
+
+func TestDRSDomainRejectsFractionalBeta(t *testing.T) {
+	scenario := domainScenario(DomainTopologyConfig{
+		Model: "drs", Beta: floatPointer(1.5),
+	}, 100)
+	scenario.ApplyDefaults()
+	if err := scenario.ExpandDomain(); err == nil {
+		t.Fatal("expected fractional DRS beta to be rejected")
+	}
+}
+
+func TestDRSDomainResolvesNodePerformanceBeforeCoreSelection(t *testing.T) {
+	model := DomainTopologyConfig{Model: "drs", Alpha: floatPointer(0.25), Beta: floatPointer(2)}
+	first := domainScenario(model, 100)
+	second := domainScenario(model, 100)
+	first.Domain.Node.ProcessingDelayDistribution = Distribution{Type: "normal", MeanMS: 50, StdDevMS: 25}
+	second.Domain.Node.ProcessingDelayDistribution = Distribution{Type: "normal", MeanMS: 50, StdDevMS: 25}
+
+	resolveDomainForTest(t, first)
+	resolveDomainForTest(t, second)
+	if !reflect.DeepEqual(first.Topology, second.Topology) {
+		t.Fatal("same seed and node-delay distribution generated different DRS topology")
+	}
+	if len(first.Topology.Edges) == 0 {
+		t.Fatal("DRS generated no edges")
 	}
 }

@@ -17,9 +17,10 @@ func (s *Scenario) ResolveDelayAssignments() error {
 }
 
 // resolveNodeDelayAssignments resolves node processing baselines independently
-// from topology generation. BA-opportunistic uses the same deterministic
-// assignment before choosing attachment targets so node performance can affect
-// preferential attachment without changing the baseline sampling semantics.
+// from topology generation. Performance-aware generators such as
+// BA-opportunistic and DRS use the same deterministic assignment before
+// topology construction so node performance can affect placement without
+// changing the baseline sampling semantics.
 func resolveNodeDelayAssignments(nodes []NodeSpec, seed int64) error {
 	nodeRNG := rand.New(rand.NewSource(domainSeed(seed, "node-delay-assignment")))
 	for index := range nodes {

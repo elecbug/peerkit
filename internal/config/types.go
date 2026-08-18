@@ -117,6 +117,7 @@ type DomainTopologyConfig struct {
 	AverageDegree   *float64 `yaml:"average_degree,omitempty" json:"average_degree,omitempty"`
 	M               int      `yaml:"m,omitempty" json:"m,omitempty"`
 	K               int      `yaml:"k,omitempty" json:"k,omitempty"`
+	Alpha           *float64 `yaml:"alpha,omitempty" json:"alpha,omitempty"`
 	Beta            *float64 `yaml:"beta,omitempty" json:"beta,omitempty"`
 	Rows            int      `yaml:"rows,omitempty" json:"rows,omitempty"`
 	Columns         int      `yaml:"columns,omitempty" json:"columns,omitempty"`

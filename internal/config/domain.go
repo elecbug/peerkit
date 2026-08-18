@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"hash/fnv"
+	"math"
 	"math/rand"
 	"sort"
 	"strconv"
@@ -59,8 +60,9 @@ func (s *Scenario) ExpandDomain() error {
 
 	// Domain-level performance settings override top-level defaults while still
 	// inheriting fields omitted by the compact declaration. Ordinary topologies
-	// assign stable baselines after expansion; BA-opportunistic resolves node
-	// baselines during expansion because they participate in attachment choices.
+	// assign stable baselines after expansion; performance-aware topologies such
+	// as BA-opportunistic and DRS resolve node baselines during expansion because
+	// they participate in topology construction.
 	var domainNodeTemplate *NodePerformance
 	if domain.Node != nil {
 		resolved := *domain.Node
@@ -202,6 +204,31 @@ func generateDomainEdges(
 			return nil, fmt.Errorf("resolve BA-opportunistic node delays: %w", err)
 		}
 		return generateBAOpportunistic(n, cfg.M, nodes, edgeTemplate, seed)
+
+	case "drs", "double-ring-smallworld", "double_ring_smallworld":
+		if n < 7 {
+			return nil, fmt.Errorf("DRS topology requires at least 7 nodes")
+		}
+		alpha := 0.25
+		if cfg.Alpha != nil {
+			alpha = *cfg.Alpha
+		}
+		if alpha <= 0 || alpha >= 1 {
+			return nil, fmt.Errorf("domain.topology.alpha must be between 0 and 1 (exclusive) for DRS")
+		}
+		if cfg.Beta == nil {
+			return nil, fmt.Errorf("domain.topology.beta is required for DRS")
+		}
+		if *cfg.Beta <= 0 || math.Trunc(*cfg.Beta) != *cfg.Beta {
+			return nil, fmt.Errorf("domain.topology.beta must be a positive integer for DRS")
+		}
+		if len(nodes) != n {
+			return nil, fmt.Errorf("DRS requires %d resolved nodes; got %d", n, len(nodes))
+		}
+		if err := resolveNodeDelayAssignments(nodes, seed); err != nil {
+			return nil, fmt.Errorf("resolve DRS node delays: %w", err)
+		}
+		return generateDRS(n, alpha, int(*cfg.Beta), nodes, rng)
 
 	case "ws", "watts-strogatz", "watts_strogatz":
 		if cfg.K <= 0 || cfg.K >= n || cfg.K%2 != 0 {
@@ -522,6 +549,130 @@ func weightedDegreeChoice(degrees []int, excluded map[int]struct{}, rng *rand.Ra
 		choice -= degree
 	}
 	panic("unreachable weighted degree selection")
+}
+
+// generateDRS builds a Double-Ring Small-World (DRS) topology.
+//
+// Nodes are ranked by their already-resolved processing-delay baseline. The
+// fastest ceil(alpha * n) nodes form the inner/core ring and the remaining
+// nodes form the outer/periphery ring. Alpha defaults to 0.25 when omitted.
+// Ties are broken by the stable node index.
+// Within each ring, node indices are used as the deterministic ring order.
+//
+// Every node then selects beta distinct nodes from the inner ring and forms an
+// undirected link to each selected target. For inner-ring nodes, self and the
+// two existing ring neighbors are excluded, so beta denotes additional core
+// shortcuts rather than re-selecting a ring edge. Because the graph is
+// undirected, reciprocal selections collapse to one physical edge, but each
+// node still has all of its beta selected core targets as neighbors.
+//
+// DRS intentionally uses node processing performance only for core membership;
+// edge delay baselines are assigned normally after topology expansion.
+func generateDRS(n int, alpha float64, beta int, nodes []NodeSpec, rng *rand.Rand) ([]generatedEdge, error) {
+	if alpha <= 0 || alpha >= 1 {
+		return nil, fmt.Errorf("DRS alpha must be between 0 and 1 (exclusive)")
+	}
+	coreCount := int(math.Ceil(alpha * float64(n)))
+	if coreCount < 4 || n-coreCount < 3 {
+		return nil, fmt.Errorf(
+			"DRS alpha=%.4g yields %d inner-ring and %d outer-ring nodes; need at least 4 inner and 3 outer nodes",
+			alpha,
+			coreCount,
+			n-coreCount,
+		)
+	}
+	if beta <= 0 {
+		return nil, fmt.Errorf("DRS beta must be positive")
+	}
+	if beta > coreCount-3 {
+		return nil, fmt.Errorf(
+			"DRS beta=%d is too large for %d inner-ring nodes; maximum additional core fanout is %d",
+			beta,
+			coreCount,
+			coreCount-3,
+		)
+	}
+	if len(nodes) != n {
+		return nil, fmt.Errorf("DRS requires %d resolved nodes; got %d", n, len(nodes))
+	}
+
+	ranked := make([]int, n)
+	processingBaselines := make([]float64, n)
+	for index, node := range nodes {
+		if node.Performance == nil {
+			return nil, fmt.Errorf("DRS node %s has no resolved performance config", node.ID)
+		}
+		delay := node.Performance.ProcessingDelayDistribution
+		if strings.ToLower(delay.Type) != "constant" {
+			return nil, fmt.Errorf("DRS node %s processing baseline is not resolved", node.ID)
+		}
+		ranked[index] = index
+		processingBaselines[index] = delay.ValueMS
+	}
+	sort.SliceStable(ranked, func(i, j int) bool {
+		left := ranked[i]
+		right := ranked[j]
+		if processingBaselines[left] != processingBaselines[right] {
+			return processingBaselines[left] < processingBaselines[right]
+		}
+		return left < right
+	})
+
+	inner := append([]int(nil), ranked[:coreCount]...)
+	outer := append([]int(nil), ranked[coreCount:]...)
+	// Ring order is intentionally independent of the performance ranking once
+	// membership is decided, keeping topology generation deterministic and
+	// avoiding an extra performance-ordering effect inside either ring.
+	sort.Ints(inner)
+	sort.Ints(outer)
+
+	adjacency := make([]map[int]struct{}, n)
+	ringAdjacency := make([]map[int]struct{}, n)
+	for i := 0; i < n; i++ {
+		adjacency[i] = make(map[int]struct{})
+		ringAdjacency[i] = make(map[int]struct{})
+	}
+	edges := make([]generatedEdge, 0, n*(beta+2))
+
+	addRing := func(ring []int) {
+		for i, node := range ring {
+			next := ring[(i+1)%len(ring)]
+			addSimpleGeneratedEdge(&edges, adjacency, node, next)
+			ringAdjacency[node][next] = struct{}{}
+			ringAdjacency[next][node] = struct{}{}
+		}
+	}
+	addRing(inner)
+	addRing(outer)
+
+	for node := 0; node < n; node++ {
+		candidates := make([]int, 0, len(inner))
+		for _, target := range inner {
+			if target == node {
+				continue
+			}
+			if _, isRingNeighbor := ringAdjacency[node][target]; isRingNeighbor {
+				continue
+			}
+			candidates = append(candidates, target)
+		}
+		if len(candidates) < beta {
+			return nil, fmt.Errorf(
+				"DRS node %s has only %d eligible inner-ring targets for beta=%d",
+				nodes[node].ID,
+				len(candidates),
+				beta,
+			)
+		}
+		rng.Shuffle(len(candidates), func(i, j int) {
+			candidates[i], candidates[j] = candidates[j], candidates[i]
+		})
+		for _, target := range candidates[:beta] {
+			addSimpleGeneratedEdge(&edges, adjacency, node, target)
+		}
+	}
+
+	return edges, nil
 }
 
 func generateWS(n, k int, beta float64, rng *rand.Rand) []generatedEdge {
