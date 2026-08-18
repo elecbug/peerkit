@@ -209,6 +209,9 @@ func generateDomainEdges(
 		if n < 7 {
 			return nil, fmt.Errorf("DRS topology requires at least 7 nodes")
 		}
+		if cfg.K <= 0 || cfg.K >= n || cfg.K%2 != 0 {
+			return nil, fmt.Errorf("domain.topology.k must be positive, even, and smaller than node count for DRS")
+		}
 		alpha := 0.25
 		if cfg.Alpha != nil {
 			alpha = *cfg.Alpha
@@ -228,7 +231,7 @@ func generateDomainEdges(
 		if err := resolveNodeDelayAssignments(nodes, seed); err != nil {
 			return nil, fmt.Errorf("resolve DRS node delays: %w", err)
 		}
-		return generateDRS(n, alpha, int(*cfg.Beta), nodes, rng)
+		return generateDRS(n, cfg.K, alpha, int(*cfg.Beta), nodes, rng)
 
 	case "ws", "watts-strogatz", "watts_strogatz":
 		if cfg.K <= 0 || cfg.K >= n || cfg.K%2 != 0 {
@@ -553,22 +556,38 @@ func weightedDegreeChoice(degrees []int, excluded map[int]struct{}, rng *rand.Ra
 
 // generateDRS builds a Double-Ring Small-World (DRS) topology.
 //
+// k is the target mean degree of the final undirected graph, matching the role
+// of k in the WS generator. The generator therefore targets exactly n*k/2
+// physical edges (k is required to be even by the caller).
+//
 // Nodes are ranked by their already-resolved processing-delay baseline. The
 // fastest ceil(alpha * n) nodes form the inner/core ring and the remaining
 // nodes form the outer/periphery ring. Alpha defaults to 0.25 when omitted.
-// Ties are broken by the stable node index.
-// Within each ring, node indices are used as the deterministic ring order.
+// Ties are broken by the stable node index. Within each ring, node indices are
+// used as the deterministic ring order.
 //
-// Every node then selects beta distinct nodes from the inner ring and forms an
-// undirected link to each selected target. For inner-ring nodes, self and the
-// two existing ring neighbors are excluded, so beta denotes additional core
-// shortcuts rather than re-selecting a ring edge. Because the graph is
-// undirected, reciprocal selections collapse to one physical edge, but each
-// node still has all of its beta selected core targets as neighbors.
+// Both groups first receive a simple cycle, preserving the double-ring
+// backbone. Every outer node is then connected to beta distinct random inner
+// nodes. Inner nodes also obtain at least beta non-ring inner neighbors through
+// random core shortcuts. Existing reciprocal shortcuts count as neighbors, so
+// an inner node may need to create fewer than beta new physical edges.
+//
+// After those mandatory DRS edges are present, the remaining edge budget up to
+// n*k/2 is filled with nearest-neighbor ring-lattice edges inside the two rings.
+// The fill is balanced by ring size and proceeds from short to long cyclic
+// distance, so k controls final density while beta independently controls how
+// strongly nodes attach to the fast core.
+//
+// If the mandatory double-ring + beta structure already exceeds the edge
+// budget implied by k, or if the two rings cannot supply enough local edges to
+// reach k, generation fails instead of silently changing either parameter.
 //
 // DRS intentionally uses node processing performance only for core membership;
 // edge delay baselines are assigned normally after topology expansion.
-func generateDRS(n int, alpha float64, beta int, nodes []NodeSpec, rng *rand.Rand) ([]generatedEdge, error) {
+func generateDRS(n, k int, alpha float64, beta int, nodes []NodeSpec, rng *rand.Rand) ([]generatedEdge, error) {
+	if k <= 0 || k >= n || k%2 != 0 {
+		return nil, fmt.Errorf("DRS k must be positive, even, and smaller than node count")
+	}
 	if alpha <= 0 || alpha >= 1 {
 		return nil, fmt.Errorf("DRS alpha must be between 0 and 1 (exclusive)")
 	}
@@ -586,7 +605,7 @@ func generateDRS(n int, alpha float64, beta int, nodes []NodeSpec, rng *rand.Ran
 	}
 	if beta > coreCount-3 {
 		return nil, fmt.Errorf(
-			"DRS beta=%d is too large for %d inner-ring nodes; maximum additional core fanout is %d",
+			"DRS beta=%d is too large for %d inner-ring nodes; maximum non-ring inner fanout is %d",
 			beta,
 			coreCount,
 			coreCount-3,
@@ -595,6 +614,8 @@ func generateDRS(n int, alpha float64, beta int, nodes []NodeSpec, rng *rand.Ran
 	if len(nodes) != n {
 		return nil, fmt.Errorf("DRS requires %d resolved nodes; got %d", n, len(nodes))
 	}
+
+	targetEdges := n * k / 2
 
 	ranked := make([]int, n)
 	processingBaselines := make([]float64, n)
@@ -626,13 +647,18 @@ func generateDRS(n int, alpha float64, beta int, nodes []NodeSpec, rng *rand.Ran
 	sort.Ints(inner)
 	sort.Ints(outer)
 
+	isInner := make([]bool, n)
+	for _, node := range inner {
+		isInner[node] = true
+	}
+
 	adjacency := make([]map[int]struct{}, n)
 	ringAdjacency := make([]map[int]struct{}, n)
 	for i := 0; i < n; i++ {
 		adjacency[i] = make(map[int]struct{})
 		ringAdjacency[i] = make(map[int]struct{})
 	}
-	edges := make([]generatedEdge, 0, n*(beta+2))
+	edges := make([]generatedEdge, 0, targetEdges)
 
 	addRing := func(ring []int) {
 		for i, node := range ring {
@@ -645,30 +671,159 @@ func generateDRS(n int, alpha float64, beta int, nodes []NodeSpec, rng *rand.Ran
 	addRing(inner)
 	addRing(outer)
 
-	for node := 0; node < n; node++ {
-		candidates := make([]int, 0, len(inner))
-		for _, target := range inner {
-			if target == node {
-				continue
-			}
-			if _, isRingNeighbor := ringAdjacency[node][target]; isRingNeighbor {
-				continue
-			}
-			candidates = append(candidates, target)
-		}
-		if len(candidates) < beta {
-			return nil, fmt.Errorf(
-				"DRS node %s has only %d eligible inner-ring targets for beta=%d",
-				nodes[node].ID,
-				len(candidates),
-				beta,
-			)
-		}
+	// Outer nodes have exactly beta explicit access links into the fast core.
+	for _, node := range outer {
+		candidates := append([]int(nil), inner...)
 		rng.Shuffle(len(candidates), func(i, j int) {
 			candidates[i], candidates[j] = candidates[j], candidates[i]
 		})
 		for _, target := range candidates[:beta] {
 			addSimpleGeneratedEdge(&edges, adjacency, node, target)
+		}
+	}
+
+	// Inner nodes must have at least beta additional inner neighbors outside the
+	// base ring. Incoming shortcuts created by another inner node already satisfy
+	// this requirement and are therefore counted rather than duplicated.
+	innerShortcutCount := func(node int) int {
+		count := 0
+		for neighbor := range adjacency[node] {
+			if !isInner[neighbor] {
+				continue
+			}
+			if _, ringNeighbor := ringAdjacency[node][neighbor]; ringNeighbor {
+				continue
+			}
+			count++
+		}
+		return count
+	}
+	innerOrder := append([]int(nil), inner...)
+	rng.Shuffle(len(innerOrder), func(i, j int) {
+		innerOrder[i], innerOrder[j] = innerOrder[j], innerOrder[i]
+	})
+	for _, node := range innerOrder {
+		need := beta - innerShortcutCount(node)
+		if need <= 0 {
+			continue
+		}
+		candidates := make([]int, 0, len(inner))
+		for _, target := range inner {
+			if target == node {
+				continue
+			}
+			if _, ringNeighbor := ringAdjacency[node][target]; ringNeighbor {
+				continue
+			}
+			if _, exists := adjacency[node][target]; exists {
+				continue
+			}
+			candidates = append(candidates, target)
+		}
+		if len(candidates) < need {
+			return nil, fmt.Errorf(
+				"DRS inner node %s needs %d more random core links but only %d targets remain",
+				nodes[node].ID,
+				need,
+				len(candidates),
+			)
+		}
+		rng.Shuffle(len(candidates), func(i, j int) {
+			candidates[i], candidates[j] = candidates[j], candidates[i]
+		})
+		for _, target := range candidates[:need] {
+			addSimpleGeneratedEdge(&edges, adjacency, node, target)
+		}
+	}
+
+	if len(edges) > targetEdges {
+		return nil, fmt.Errorf(
+			"DRS k=%d allows %d edges, but alpha=%.4g and beta=%d require at least %d; increase k or reduce beta",
+			k,
+			targetEdges,
+			alpha,
+			beta,
+			len(edges),
+		)
+	}
+
+	// Build nearest-neighbor lattice candidates separately for both rings. The
+	// weighted selection below keeps the number of added local edges per ring
+	// approximately proportional to ring size while always preferring the next
+	// shortest available cyclic edge in that ring.
+	ringCandidates := func(ring []int) []generatedEdge {
+		candidates := make([]generatedEdge, 0)
+		seen := make(map[[2]int]struct{})
+		for distance := 2; distance <= len(ring)/2; distance++ {
+			for i, node := range ring {
+				target := ring[(i+distance)%len(ring)]
+				if node == target {
+					continue
+				}
+				a, b := node, target
+				if a > b {
+					a, b = b, a
+				}
+				key := [2]int{a, b}
+				if _, duplicate := seen[key]; duplicate {
+					continue
+				}
+				seen[key] = struct{}{}
+				if _, exists := adjacency[a][b]; exists {
+					continue
+				}
+				candidates = append(candidates, generatedEdge{a: a, b: b})
+			}
+		}
+		return candidates
+	}
+
+	innerCandidates := ringCandidates(inner)
+	outerCandidates := ringCandidates(outer)
+	innerIndex, outerIndex := 0, 0
+	innerAdded, outerAdded := 0, 0
+	for len(edges) < targetEdges {
+		innerAvailable := innerIndex < len(innerCandidates)
+		outerAvailable := outerIndex < len(outerCandidates)
+		if !innerAvailable && !outerAvailable {
+			return nil, fmt.Errorf(
+				"DRS k=%d requires %d edges, but alpha=%.4g and beta=%d can construct only %d",
+				k,
+				targetEdges,
+				alpha,
+				beta,
+				len(edges),
+			)
+		}
+
+		chooseInner := false
+		switch {
+		case innerAvailable && !outerAvailable:
+			chooseInner = true
+		case !innerAvailable && outerAvailable:
+			chooseInner = false
+		default:
+			// Compare added local edges per node without floating point:
+			// innerAdded/coreCount <= outerAdded/outerCount.
+			chooseInner = innerAdded*len(outer) <= outerAdded*len(inner)
+		}
+
+		if chooseInner {
+			edge := innerCandidates[innerIndex]
+			innerIndex++
+			if _, exists := adjacency[edge.a][edge.b]; exists {
+				continue
+			}
+			addSimpleGeneratedEdge(&edges, adjacency, edge.a, edge.b)
+			innerAdded++
+		} else {
+			edge := outerCandidates[outerIndex]
+			outerIndex++
+			if _, exists := adjacency[edge.a][edge.b]; exists {
+				continue
+			}
+			addSimpleGeneratedEdge(&edges, adjacency, edge.a, edge.b)
+			outerAdded++
 		}
 	}
 

@@ -365,11 +365,11 @@ func TestDRSDomainIsDeterministicAndUsesFastestQuartileAsCore(t *testing.T) {
 		}
 	}
 
-	first, err := generateDRS(n, 0.25, beta, nodes, rand.New(rand.NewSource(42)))
+	first, err := generateDRS(n, 8, 0.25, beta, nodes, rand.New(rand.NewSource(42)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := generateDRS(n, 0.25, beta, nodes, rand.New(rand.NewSource(42)))
+	second, err := generateDRS(n, 8, 0.25, beta, nodes, rand.New(rand.NewSource(42)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +458,7 @@ func TestDRSDomainAlphaControlsCoreRatio(t *testing.T) {
 		}
 	}
 
-	edges, err := generateDRS(n, alpha, beta, nodes, rand.New(rand.NewSource(42)))
+	edges, err := generateDRS(n, 8, alpha, beta, nodes, rand.New(rand.NewSource(42)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,8 +484,46 @@ func TestDRSDomainAlphaControlsCoreRatio(t *testing.T) {
 	}
 }
 
+func TestDRSDomainKControlsFinalMeanDegree(t *testing.T) {
+	const (
+		n = 100
+		k = 16
+	)
+	scenario := domainScenario(DomainTopologyConfig{
+		Model: "drs", K: k, Alpha: floatPointer(0.25), Beta: floatPointer(2),
+	}, n)
+	resolveDomainForTest(t, scenario)
+
+	wantEdges := n * k / 2
+	if len(scenario.Topology.Edges) != wantEdges {
+		t.Fatalf("DRS edge count=%d; want %d for mean degree k=%d", len(scenario.Topology.Edges), wantEdges, k)
+	}
+}
+
+func TestDRSDomainRejectsInvalidK(t *testing.T) {
+	for _, k := range []int{0, 3, 100} {
+		scenario := domainScenario(DomainTopologyConfig{
+			Model: "drs", K: k, Alpha: floatPointer(0.25), Beta: floatPointer(1),
+		}, 100)
+		scenario.ApplyDefaults()
+		if err := scenario.ExpandDomain(); err == nil {
+			t.Fatalf("expected DRS k=%d to be rejected", k)
+		}
+	}
+}
+
+func TestDRSDomainRejectsKBelowMandatoryStructure(t *testing.T) {
+	scenario := domainScenario(DomainTopologyConfig{
+		Model: "drs", K: 4, Alpha: floatPointer(0.25), Beta: floatPointer(4),
+	}, 100)
+	scenario.ApplyDefaults()
+	if err := scenario.ExpandDomain(); err == nil {
+		t.Fatal("expected DRS k=4 beta=4 to exceed the target edge budget")
+	}
+}
+
 func TestDRSDomainDefaultsAlphaToQuarter(t *testing.T) {
-	model := DomainTopologyConfig{Model: "drs", Beta: floatPointer(2)}
+	model := DomainTopologyConfig{Model: "drs", K: 8, Beta: floatPointer(2)}
 	scenario := domainScenario(model, 100)
 	scenario.ApplyDefaults()
 	if err := scenario.ExpandDomain(); err != nil {
@@ -499,7 +537,7 @@ func TestDRSDomainDefaultsAlphaToQuarter(t *testing.T) {
 func TestDRSDomainRejectsInvalidAlpha(t *testing.T) {
 	for _, alpha := range []float64{0, -0.1, 1, 1.1} {
 		scenario := domainScenario(DomainTopologyConfig{
-			Model: "drs", Alpha: floatPointer(alpha), Beta: floatPointer(1),
+			Model: "drs", K: 8, Alpha: floatPointer(alpha), Beta: floatPointer(1),
 		}, 100)
 		scenario.ApplyDefaults()
 		if err := scenario.ExpandDomain(); err == nil {
@@ -510,7 +548,7 @@ func TestDRSDomainRejectsInvalidAlpha(t *testing.T) {
 
 func TestDRSDomainRejectsFractionalBeta(t *testing.T) {
 	scenario := domainScenario(DomainTopologyConfig{
-		Model: "drs", Beta: floatPointer(1.5),
+		Model: "drs", K: 8, Beta: floatPointer(1.5),
 	}, 100)
 	scenario.ApplyDefaults()
 	if err := scenario.ExpandDomain(); err == nil {
@@ -519,7 +557,7 @@ func TestDRSDomainRejectsFractionalBeta(t *testing.T) {
 }
 
 func TestDRSDomainResolvesNodePerformanceBeforeCoreSelection(t *testing.T) {
-	model := DomainTopologyConfig{Model: "drs", Alpha: floatPointer(0.25), Beta: floatPointer(2)}
+	model := DomainTopologyConfig{Model: "drs", K: 16, Alpha: floatPointer(0.25), Beta: floatPointer(2)}
 	first := domainScenario(model, 100)
 	second := domainScenario(model, 100)
 	first.Domain.Node.ProcessingDelayDistribution = Distribution{Type: "normal", MeanMS: 50, StdDevMS: 25}
