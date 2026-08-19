@@ -102,8 +102,8 @@ type InjectResponse struct {
 }
 
 func New(ctx context.Context, cfg *config.RuntimeNodeConfig) (*Peer, error) {
-	cfg.Protocol = protocols.Normalize(cfg.Protocol)
-	if err := protocols.Validate(cfg.Protocol); err != nil {
+	cfg.Protocol = protocols.NormalizeConfig(cfg.Protocol)
+	if err := protocols.ValidateConfig(cfg.Protocol); err != nil {
 		return nil, err
 	}
 	privateKeyBytes, err := base64.StdEncoding.DecodeString(cfg.PrivateKey)
@@ -321,9 +321,9 @@ func (p *Peer) Inject(count int, interval time.Duration, payloadBytes int) {
 		p.registerLocalMessage(message.ID)
 		p.record(metrics.Event{
 			Type: "message_created", MessageID: message.ID, Origin: message.Origin,
-			Sequence: message.Sequence, Hop: message.Hop, PayloadBytes: message.PayloadBytes,
+			Sequence: message.Sequence, Hop: message.Hop, HopWaveHop: message.HopWaveHop, PayloadBytes: message.PayloadBytes,
 		})
-		if protocols.UsesIDontWant(p.cfg.Protocol) {
+		if protocols.UsesIDontWant(p.cfg.Protocol.ProtocolName()) {
 			p.broadcastIDontWant(message, "")
 		}
 		p.enqueueProcessing(processItem{message: message, enqueuedAt: now})
@@ -361,20 +361,20 @@ func (p *Peer) acceptMessage(message WireMessage, from string) {
 	duplicate := p.registerReceivedMessage(message.ID, from)
 	p.record(metrics.Event{
 		Type: "message_received", MessageID: message.ID, Origin: message.Origin,
-		From: from, Sequence: message.Sequence, Hop: message.Hop,
+		From: from, Sequence: message.Sequence, Hop: message.Hop, HopWaveHop: message.HopWaveHop,
 		PayloadBytes: message.PayloadBytes, Duplicate: duplicate,
 	})
 	if duplicate {
 		return
 	}
-	if protocols.UsesIDontWant(p.cfg.Protocol) {
+	if protocols.UsesIDontWant(p.cfg.Protocol.ProtocolName()) {
 		p.broadcastIDontWant(message, from)
 	}
 	p.enqueueProcessing(processItem{message: message, from: from, enqueuedAt: now})
 }
 
 func (p *Peer) acceptIDontWant(frame WireFrame, from string) {
-	if !protocols.UsesIDontWant(p.cfg.Protocol) {
+	if !protocols.UsesIDontWant(p.cfg.Protocol.ProtocolName()) {
 		return
 	}
 	p.registerIDontWant(frame.MessageID, from)
@@ -402,7 +402,7 @@ func (p *Peer) enqueueProcessing(item processItem) {
 	default:
 		p.record(metrics.Event{
 			Type: "message_dropped", MessageID: item.message.ID, Origin: item.message.Origin,
-			From: item.from, Sequence: item.message.Sequence, Hop: item.message.Hop,
+			From: item.from, Sequence: item.message.Sequence, Hop: item.message.Hop, HopWaveHop: item.message.HopWaveHop,
 			PayloadBytes: item.message.PayloadBytes, Reason: "node_queue_full",
 		})
 	}
@@ -426,22 +426,47 @@ func (p *Peer) runWorker(ctx context.Context, workerIndex int) {
 			}
 			p.record(metrics.Event{
 				Type: "message_processed", MessageID: item.message.ID, Origin: item.message.Origin,
-				From: item.from, Sequence: item.message.Sequence, Hop: item.message.Hop,
+				From: item.from, Sequence: item.message.Sequence, Hop: item.message.Hop, HopWaveHop: item.message.HopWaveHop,
 				PayloadBytes: item.message.PayloadBytes, QueueWaitNS: queueWait.Nanoseconds(),
 				ProcessingNS: processingDelay.Nanoseconds(),
 			})
 
 			suppressed := p.beginForwarding(item.message.ID)
+			eligible := make([]string, 0, len(p.cfg.Neighbors))
 			for _, neighbor := range p.cfg.Neighbors {
 				nodeID := neighbor.NodeID
 				if nodeID == item.from {
 					continue
 				}
-				forward := item.message
-				forward.Hop++
 				if reason, skip := suppressed[nodeID]; skip {
+					forward := item.message
+					forward.Hop++
 					p.recordSuppression(forward, nodeID, reason)
 					continue
+				}
+				eligible = append(eligible, nodeID)
+			}
+
+			hopWaveHop := item.message.HopWaveHop
+			var hopWaveTargets map[string]struct{}
+			if p.cfg.Protocol.IsHopWave() {
+				decision := decideHopWaveRelay(*p.cfg.Protocol.HopWave, item.from == "", item.message.HopWaveHop)
+				hopWaveHop = decision.outgoingHop
+				if !decision.crest {
+					hopWaveTargets = selectHopWaveTargets(eligible, p.cfg.Protocol.HopWave.F, p.hopWaveSelectionSeed(item.message))
+				}
+			}
+
+			for _, nodeID := range eligible {
+				if hopWaveTargets != nil {
+					if _, selected := hopWaveTargets[nodeID]; !selected {
+						continue
+					}
+				}
+				forward := item.message
+				forward.Hop++
+				if p.cfg.Protocol.IsHopWave() {
+					forward.HopWaveHop = hopWaveHop
 				}
 				p.senders[nodeID].enqueueData(newDataFrame(forward))
 			}
@@ -453,7 +478,7 @@ func (p *Peer) recordSuppression(message WireMessage, target, reason string) {
 	p.record(metrics.Event{
 		Type: "message_suppressed", FrameType: frameTypeData,
 		MessageID: message.ID, Origin: message.Origin, To: target,
-		Sequence: message.Sequence, Hop: message.Hop,
+		Sequence: message.Sequence, Hop: message.Hop, HopWaveHop: message.HopWaveHop,
 		PayloadBytes: message.PayloadBytes, Reason: reason,
 	})
 }
@@ -468,7 +493,7 @@ func (s *edgeSender) enqueueData(frame WireFrame) {
 		s.owner.record(metrics.Event{
 			Type: "message_dropped", FrameType: frameTypeData,
 			MessageID: frame.MessageID, Origin: frame.Origin,
-			To: s.neighbor.NodeID, Sequence: frame.Sequence, Hop: frame.Hop,
+			To: s.neighbor.NodeID, Sequence: frame.Sequence, Hop: frame.Hop, HopWaveHop: frame.HopWaveHop,
 			PayloadBytes: frame.PayloadBytes, Reason: "edge_queue_full",
 		})
 	}
@@ -591,7 +616,7 @@ func (s *edgeSender) send(ctx context.Context, item outboundItem) {
 		s.owner.record(metrics.Event{
 			Type: "message_sent", FrameType: frameTypeData,
 			MessageID: frame.MessageID, Origin: frame.Origin,
-			To: s.neighbor.NodeID, Sequence: frame.Sequence, Hop: frame.Hop,
+			To: s.neighbor.NodeID, Sequence: frame.Sequence, Hop: frame.Hop, HopWaveHop: frame.HopWaveHop,
 			PayloadBytes: frame.PayloadBytes, QueueWaitNS: queueWait.Nanoseconds(),
 			EdgeDelayNS: propagationDelay.Nanoseconds(), SerializationNS: serializationDelay.Nanoseconds(),
 		})
@@ -611,7 +636,7 @@ func (s *edgeSender) recordDrop(frame WireFrame, queueWait, edgeDelay, serializa
 		s.owner.record(metrics.Event{
 			Type: "message_dropped", FrameType: frameTypeData,
 			MessageID: frame.MessageID, Origin: frame.Origin,
-			To: s.neighbor.NodeID, Sequence: frame.Sequence, Hop: frame.Hop,
+			To: s.neighbor.NodeID, Sequence: frame.Sequence, Hop: frame.Hop, HopWaveHop: frame.HopWaveHop,
 			PayloadBytes: frame.PayloadBytes, QueueWaitNS: queueWait.Nanoseconds(),
 			EdgeDelayNS: edgeDelay.Nanoseconds(), SerializationNS: serialization.Nanoseconds(),
 			Reason: reason, LossRate: s.neighbor.Network.LossRate,
@@ -760,7 +785,7 @@ func (p *Peer) record(event metrics.Event) {
 	event.RunID = p.cfg.RunID
 	event.Experiment = p.cfg.ExperimentName
 	event.Node = p.cfg.NodeID
-	event.Protocol = p.cfg.Protocol
+	event.Protocol = p.cfg.Protocol.ProtocolName()
 	if err := p.writer.Write(event); err != nil {
 		log.Printf("write event: %v", err)
 	}

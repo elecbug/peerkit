@@ -21,6 +21,7 @@ type WireMessage struct {
 	Sequence     uint64 `json:"sequence"`
 	CreatedAtNS  int64  `json:"created_at_ns"`
 	Hop          uint32 `json:"hop"`
+	HopWaveHop   uint32 `json:"hopwave_hop,omitempty"`
 	PayloadBytes int    `json:"payload_bytes"`
 }
 
@@ -31,6 +32,7 @@ type WireFrame struct {
 	Sequence     uint64 `json:"sequence,omitempty"`
 	CreatedAtNS  int64  `json:"created_at_ns,omitempty"`
 	Hop          uint32 `json:"hop,omitempty"`
+	HopWaveHop   uint32 `json:"hopwave_hop,omitempty"`
 	PayloadBytes int    `json:"payload_bytes,omitempty"`
 }
 
@@ -38,7 +40,7 @@ func newDataFrame(message WireMessage) WireFrame {
 	return WireFrame{
 		Type: frameTypeData, MessageID: message.ID, Origin: message.Origin,
 		Sequence: message.Sequence, CreatedAtNS: message.CreatedAtNS,
-		Hop: message.Hop, PayloadBytes: message.PayloadBytes,
+		Hop: message.Hop, HopWaveHop: message.HopWaveHop, PayloadBytes: message.PayloadBytes,
 	}
 }
 
@@ -52,7 +54,7 @@ func newIDontWantFrame(message WireMessage) WireFrame {
 func (f WireFrame) message() WireMessage {
 	return WireMessage{
 		ID: f.MessageID, Origin: f.Origin, Sequence: f.Sequence,
-		CreatedAtNS: f.CreatedAtNS, Hop: f.Hop,
+		CreatedAtNS: f.CreatedAtNS, Hop: f.Hop, HopWaveHop: f.HopWaveHop,
 		PayloadBytes: f.PayloadBytes,
 	}
 }

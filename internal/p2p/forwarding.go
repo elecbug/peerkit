@@ -36,7 +36,7 @@ func (p *Peer) registerReceivedMessage(messageID, from string) bool {
 		p.knowledge[messageID] = state
 	}
 	if _, duplicate := p.seen[messageID]; duplicate {
-		if protocols.UsesDuplicateNeighborSuppression(p.cfg.Protocol) && !state.forwardingStarted {
+		if protocols.UsesDuplicateNeighborSuppression(p.cfg.Protocol.ProtocolName()) && !state.forwardingStarted {
 			state.duplicateSenders[from] = struct{}{}
 		}
 		return true
@@ -68,7 +68,7 @@ func (p *Peer) beginForwarding(messageID string) map[string]string {
 	state.forwardingStarted = true
 
 	suppressed := make(map[string]string)
-	switch protocols.Normalize(p.cfg.Protocol) {
+	switch p.cfg.Protocol.ProtocolName() {
 	case protocols.DuplicateAwareFlooding:
 		for nodeID := range state.duplicateSenders {
 			suppressed[nodeID] = "duplicate_neighbor"
@@ -82,7 +82,7 @@ func (p *Peer) beginForwarding(messageID string) map[string]string {
 }
 
 func (p *Peer) shouldSuppressQueued(messageID, target string) bool {
-	if !protocols.UsesIDontWant(p.cfg.Protocol) {
+	if !protocols.UsesIDontWant(p.cfg.Protocol.ProtocolName()) {
 		return false
 	}
 	p.stateMu.Lock()

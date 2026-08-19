@@ -15,6 +15,7 @@ type Event struct {
 	To              string  `json:"to,omitempty"`
 	Sequence        uint64  `json:"sequence,omitempty"`
 	Hop             uint32  `json:"hop,omitempty"`
+	HopWaveHop      uint32  `json:"hopwave_hop,omitempty"`
 	PayloadBytes    int     `json:"payload_bytes,omitempty"`
 	ControlBytes    int     `json:"control_bytes,omitempty"`
 	Duplicate       bool    `json:"duplicate,omitempty"`

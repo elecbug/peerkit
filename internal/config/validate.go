@@ -12,7 +12,7 @@ import (
 var nodeIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*$`)
 
 func (s *Scenario) Validate() error {
-	if err := protocols.Validate(s.Protocol); err != nil {
+	if err := protocols.ValidateConfig(s.Protocol); err != nil {
 		return err
 	}
 	if s.Version != 1 {

@@ -7,7 +7,7 @@ import (
 )
 
 func (s *Scenario) ApplyDefaults() {
-	s.Protocol = protocols.Normalize(s.Protocol)
+	s.Protocol = protocols.NormalizeConfig(s.Protocol)
 	if s.Version == 0 {
 		s.Version = 1
 	}

@@ -1,5 +1,7 @@
 package config
 
+import "github.com/k-p2plab/peerkit/internal/protocols"
+
 const RandomTrafficSource = "random"
 
 // Milliseconds stores a duration in milliseconds. YAML accepts either a
@@ -8,7 +10,7 @@ type Milliseconds float64
 
 type Scenario struct {
 	Version    int              `yaml:"version" json:"version"`
-	Protocol   string           `yaml:"protocol,omitempty" json:"protocol,omitempty"`
+	Protocol   protocols.Config `yaml:"protocol,omitempty" json:"protocol,omitempty"`
 	Experiment ExperimentConfig `yaml:"experiment" json:"experiment"`
 	Deployment DeploymentConfig `yaml:"deployment,omitempty" json:"deployment,omitempty"`
 	Controller ControllerConfig `yaml:"controller,omitempty" json:"controller,omitempty"`
@@ -194,7 +196,7 @@ type ResolvedEdgeNetwork struct {
 type RuntimeNodeConfig struct {
 	RunID          string                  `yaml:"run_id" json:"run_id"`
 	ExperimentName string                  `yaml:"experiment_name" json:"experiment_name"`
-	Protocol       string                  `yaml:"protocol" json:"protocol"`
+	Protocol       protocols.Config        `yaml:"protocol" json:"protocol"`
 	NodeID         string                  `yaml:"node_id" json:"node_id"`
 	NodeIndex      int                     `yaml:"node_index" json:"node_index"`
 	Seed           int64                   `yaml:"seed" json:"seed"`

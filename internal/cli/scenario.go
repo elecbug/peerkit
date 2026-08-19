@@ -26,7 +26,7 @@ func (a App) validate(args []string) error {
 	}
 	fmt.Fprintf(a.Stdout, "valid: %s\n", scenario.Experiment.Name)
 	fmt.Fprintf(a.Stdout, "deployment: %s\n", scenario.Deployment.Mode)
-	fmt.Fprintf(a.Stdout, "protocol: %s\n", scenario.Protocol)
+	fmt.Fprintf(a.Stdout, "protocol: %s\n", scenario.Protocol.String())
 	fmt.Fprintf(a.Stdout, "topology: %d nodes, %d edges\n", len(scenario.Topology.Nodes), len(scenario.Topology.Edges))
 	fmt.Fprintf(a.Stdout, "traffic patterns: %d\n", len(scenario.Traffic))
 	return nil
